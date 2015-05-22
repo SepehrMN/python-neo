@@ -88,8 +88,8 @@ class NeuralynxIO(BaseIO):
     # Note that if the highest-level object requires parameters,
     # common_io_test will be skipped.
     read_params = {
-        Segment: [('load_waveforms', {'value':True})],
-        Block: [('load_waveforms', {'value': False})]
+        Segment: [('waveforms', {'value':True})],
+        Block: [('waveforms', {'value': False})]
         }
 
     # do not supported write so no GUI stuff
@@ -126,6 +126,10 @@ class NeuralynxIO(BaseIO):
         """
         BaseIO.__init__(self)
 
+        if sessiondir == None:
+            raise ValueError('Must provide a directory containing data files of'
+                                ' of one recording session.')
+
         # remove filename if specific file was passed
         if sessiondir.endswith('.ncs') \
             or sessiondir.endswith('.nev') \
@@ -147,7 +151,8 @@ class NeuralynxIO(BaseIO):
 
 
     def read_block(self, lazy=False, cascade=True, t_starts=[None], t_stops=[None],
-                   channel_list=[], units=[], events=False, load_waveforms = False):
+                    channel_list=[], units=[], analogsignals=True, events=False,
+                    waveforms = False):
         """
         Reads data in a requested time window and returns block with single segment
         containing these data.
@@ -171,7 +176,7 @@ class NeuralynxIO(BaseIO):
                             Default: [].
             events : Loading events. If True all available events in the given
                             time window will be read. Default: False.
-            load_waveforms : Load waveform for spikes in the requested time
+            waveforms : Load waveform for spikes in the requested time
                             window. Default: False.
 
         Returns: Block object containing the requested data in neo structures.
@@ -186,7 +191,7 @@ class NeuralynxIO(BaseIO):
             block = NIO.read_block(lazy = False, cascade = True,
                                    t_starts = 0.1*pq.s, t_stops = 0.2*pq.s,
                                    channel_list = [1,5,10], units = [1,2,3],
-                                   events = True, load_waveforms = True)
+                                   events = True, waveforms = True)
         """
         # Create block
         bl = Block(file_origin=self.sessiondir)
@@ -217,7 +222,8 @@ class NeuralynxIO(BaseIO):
             seg = self.read_segment(lazy=lazy, cascade=cascade,
                                     t_start=t_start, t_stop=t_stop,
                                     channel_list=channel_list, units=units,
-                                    events=events, load_waveforms=load_waveforms)
+                                    analogsignals=analogsignals, events=events,
+                                    waveforms=waveforms)
             bl.segments.append(seg)
         tools.populate_RecordingChannel(bl, remove_from_annotation=False)
 
@@ -250,7 +256,8 @@ class NeuralynxIO(BaseIO):
 
 
     def read_segment(self,lazy=False, cascade=True, t_start=None, t_stop=None,
-                     channel_list=[], units=[], events=False, load_waveforms=False):
+                        channel_list=[], units=[], analogsignals=True,
+                        events=False, waveforms=False):
         """Reads one Segment.
 
         The Segment will contain one AnalogSignalArray for each channel
@@ -273,7 +280,7 @@ class NeuralynxIO(BaseIO):
                             Default: [].
             events : Loading events. If True all available events in the given
                             time window will be read. Default: False.
-            load_waveforms : Load waveform for spikes in the requested time
+            waveforms : Load waveform for spikes in the requested time
                             window. Default: False.
 
 
@@ -298,23 +305,24 @@ class NeuralynxIO(BaseIO):
 
         # Reading NCS Files #
         # selecting ncs files to load based on channel_list requested
-        for channel_id in channel_list:
-            if channel_id in self.parameters_ncs:
-                file_ncs = self.parameters_ncs[channel_id]['filename']
-                self.read_ncs(file_ncs, seg, lazy, cascade, t_start=t_start, t_stop = t_stop)
-            else:
-                self._diagnostic_print('Can not load ncs of channel %i. No corresponding ncs file present.'%(channel_id))
+        if analogsignals:
+            for channel_id in channel_list:
+                if channel_id in self.parameters_ncs:
+                    file_ncs = self.parameters_ncs[channel_id]['filename']
+                    self.read_ncs(file_ncs, seg, lazy, cascade, t_start=t_start, t_stop = t_stop)
+                else:
+                    self._diagnostic_print('Can not load ncs of channel %i. No corresponding ncs file present.'%(channel_id))
 
-        # Reading NEV Files #
+        # Reading NEV Files (Events)#
         # reading all files available
         if events:
             for filename_nev in self.nev_avail:
                 self.read_nev(filename_nev, seg, lazy, cascade, t_start = t_start, t_stop = t_stop)
 
-        # Reading NSE Files #
-        # reading all nse files available
+        # Reading NSE Files (Spikes)#
+        # reading all nse files available  #TODO: Load only spikes of requested channels
         for filename_nse in self.nse_avail:
-            self.read_nse(filename_nse, seg, lazy, cascade, t_start = t_start, t_stop = t_stop, load_waveforms = load_waveforms)
+            self.read_nse(filename_nse, seg, lazy, cascade, t_start = t_start, t_stop = t_stop, waveforms = waveforms)
 
         return seg
 
@@ -552,7 +560,7 @@ class NeuralynxIO(BaseIO):
             seg.eventarrays.append(ev)
 
     def read_nse(self, filename_nse, seg, lazy=False, cascade=True, t_start=None, t_stop=None,
-                     load_waveforms = False):
+                     waveforms = False):
         '''
         Reads nse file and attaches content as spike train to provided neo segment.
 
@@ -565,7 +573,7 @@ class NeuralynxIO(BaseIO):
             cascade : Not used in this context. Default: 'True'.
             t_start : time (quantity) that the SpikeTrain begins. Default None.
             t_stop : time (quantity) that the SpikeTrain ends. Default None.
-            load_waveforms : Load the waveform (up to 32 data points) for each
+            waveforms : Load the waveform (up to 32 data points) for each
                             spike time. Default: False
 
         Returns:
