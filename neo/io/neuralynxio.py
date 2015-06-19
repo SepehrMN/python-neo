@@ -27,7 +27,7 @@ import quantities as pq
 from neo.io.baseio import BaseIO
 from neo.core import (Block, Segment,
                       RecordingChannel, RecordingChannelGroup, AnalogSignalArray,
-                      SpikeTrain, EventArray)
+                      SpikeTrain, EventArray,Unit)
 from neo.io import tools
 from os import listdir
 from os.path import isfile, join, getsize
@@ -213,6 +213,25 @@ class NeuralynxIO(BaseIO):
         elif type(t_stops) != list or any([(type(i) != pq.Quantity and i != None) for i in t_stops]):
             raise ValueError('Invalid specification of t_stops.')
 
+        sampling_rate = 1*pq.CompoundUnit('%i*Hz'%(self.parameters_ncs.values()[0]['sampling_rate']))
+        # adapting t_starts and t_stops to known gap times
+        for gap in self.parameters_global['gaps']:
+            gap=gap[0]
+            for e in range(len(t_starts)):
+                t1,t2 = t_starts[e], t_stops[e] #TODO: Check timing here! Go on checking gap handling and consistency checks
+                gap_start = (gap[1] - self.parameters_global['t_start']) *self.ncs_time_unit
+                gap_stop = (gap[2] - self.parameters_global['t_start']) *self.ncs_time_unit
+                if ((t1==t2==None)
+                        or (t1==None and t2.rescale(self.ncs_time_unit)>gap_stop)
+                        or (t1.rescale(self.ncs_time_unit)<gap_stop and t2==None)
+                        or (t1.rescale(self.ncs_time_unit)<gap_start and t2.rescale(self.ncs_time_unit)>gap_stop)):
+                    #adapting first time segment
+                    t_stops[e]=gap_start
+                    #inserting second time segment
+                    t_starts.insert(e+1,gap_stop)
+                    t_stops.insert(e+1,t2)
+
+
         #loading all channels if empty channel_list
         if channel_list == []:
             channel_list = self.parameters_ncs.keys()
@@ -233,24 +252,25 @@ class NeuralynxIO(BaseIO):
             for rc in rcg0.recordingchannels:
                 if rc.index==chan:
                     return rc
-        for st in seg.spiketrains:
-            chan = st.annotations['channel_index']
-            rc = find_rc(chan)
-            if rc is None:
-                rc = RecordingChannel(index = chan)
-                rcg0.recordingchannels.append(rc)
-                rc.recordingchannelgroups.append(rcg0)
-            if len(rc.recordingchannelgroups) == 1:
-                rcg = RecordingChannelGroup(name = 'Group {}'.format(chan))
-                rcg.recordingchannels.append(rc)
-                rc.recordingchannelgroups.append(rcg)
-                bl.recordingchannelgroups.append(rcg)
-            else:
-                rcg = rc.recordingchannelgroups[1]
-            unit = Unit(name = st.name)
-            rcg.units.append(unit)
-            unit.spiketrains.append(st)
-        bl.create_many_to_one_relationship()
+        for seg in bl.segments:
+            for st in seg.spiketrains:
+                chan = st.annotations['channel_index']
+                rc = find_rc(chan)
+                if rc is None:
+                    rc = RecordingChannel(index = chan)
+                    rcg0.recordingchannels.append(rc)
+                    rc.recordingchannelgroups.append(rcg0)
+                if len(rc.recordingchannelgroups) == 1:
+                    rcg = RecordingChannelGroup(name = 'Group {}'.format(chan))
+                    rcg.recordingchannels.append(rc)
+                    rc.recordingchannelgroups.append(rcg)
+                    bl.recordingchannelgroups.append(rcg)
+                else:
+                    rcg = rc.recordingchannelgroups[1]
+                unit = Unit(name = st.name)
+                rcg.units.append(unit)
+                unit.spiketrains.append(st)
+            bl.create_many_to_one_relationship()
 
         return bl
 
@@ -476,7 +496,7 @@ class NeuralynxIO(BaseIO):
 
             # last paket to be included in signal
             p_id_stop = min(first_stop + \
-                            [gap_id[0] for gap_id in self.parameters_ncs[chid]['gaps']] + \
+                            [gap_id[0] for gap_id in self.parameters_ncs[chid]['gaps'] if gap_id[0]>p_id_start] + \
                             [len(data)])
 
             # construct signal in valid paket range
@@ -616,15 +636,15 @@ class NeuralynxIO(BaseIO):
                 spikes = pq.Quantity([], units=self.nse_time_unit)
 
             # Create SpikeTrain object
-            st = neo.SpikeTrain(times=spikes,
+            st = SpikeTrain(times=spikes,
                                 dtype='int',
                                 t_start=t_start,
                                 t_stop=t_stop,
                                 sampling_rate=self.parameters_ncs.values()[0]['sampling_rate'],
                                 name= "Channel %i, Unit %i"%(channel_id, unit_i),
-                                file_origin=filehame_nse,
+                                file_origin=filename_nse,
                                 unit_id=unit_i,
-                                channel_id=channel_i)
+                                channel_id=channel_id)
 
             if waveforms and not lazy:
                 # Collect all waveforms of the specific unit
@@ -680,7 +700,7 @@ class NeuralynxIO(BaseIO):
             if filename[-4:] == '.ncs':
                 self.ncs_avail.append(filename)
 
-        self._diagnostic_print('\nDetected %i .ncs files.'%(len(self.ncs_avail)))
+        self._diagnostic_print('\nDetected %i .ncs file(s).'%(len(self.ncs_avail)))
 
 
 
@@ -691,12 +711,12 @@ class NeuralynxIO(BaseIO):
             # Reading file headers
             filehandle = self.__mmap_ncs_paket_headers(ncs_file)
 
-            if check_files:
-                # Checking consistency of ncs file
-                self.__ncs_check(filehandle)
-
             # Reading header information and store them in parameters_ncs
             self.__read_ncs_header(filehandle, ncs_file)
+
+            if check_files:
+                # Checking consistency of ncs file
+                self.__ncs_paket_check(filehandle)
 
             # Check for invalid starting times of data pakets in ncs file
             self.__ncs_invalid_first_sample_check(filehandle)
@@ -714,7 +734,7 @@ class NeuralynxIO(BaseIO):
             if filename[-4:] == '.nse':
                 self.nse_avail.append(filename)
 
-        self._diagnostic_print('\nDetected %i .nse files.'%(len(self.nse_avail)))
+        self._diagnostic_print('\nDetected %i .nse file(s).'%(len(self.nse_avail)))
 
         for nse_file in self.nse_avail:
             # Loading individual NSE file and extracting parameters
@@ -741,7 +761,7 @@ class NeuralynxIO(BaseIO):
             if filename[-4:] == '.nev':
                 self.nev_avail.append(filename)
 
-        self._diagnostic_print('\nDetected %i .nev files.'%(len(self.nev_avail)))
+        self._diagnostic_print('\nDetected %i .nev file(s).'%(len(self.nev_avail)))
 
         for nev_file in self.nev_avail:
             # Loading individual NEV file and extracting parameters
@@ -767,7 +787,7 @@ class NeuralynxIO(BaseIO):
 
         self.parameters_global = {'t_start':0,'event_offset':0}
         # check if also nev file starts at same time point
-        if self.parameters_ncs.values()[0]['t_start'] != self.parameters_nev['Starting_Recording'][0]:
+        if self.nev_avail!=[] and self.parameters_ncs.values()[0]['t_start'] != self.parameters_nev['Starting_Recording'][0]:
             warnings.warn('NCS and event of recording start are not the same!')
 
         # check if nse time is available and extract first time point as t_first
@@ -777,11 +797,15 @@ class NeuralynxIO(BaseIO):
         else: t_first = np.inf #using inf, because None is handles as if neg. number
 
         #setting global time frame
-        self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
-                                            self.parameters_nev['Starting_Recording'][0],
-                                            t_first)
-        self.parameters_global['event_offset'] = self.parameters_nev['Starting_Recording'][0] \
-                                                    - self.parameters_ncs.values()[0]['t_start']
+        if self.nev_avail!=[]:
+            self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
+                                                self.parameters_nev['Starting_Recording'][0],
+                                                t_first)
+            self.parameters_global['event_offset'] = self.parameters_nev['Starting_Recording'][0] \
+                                                        - self.parameters_ncs.values()[0]['t_start']
+        else:
+            self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'], t_first)
+            self.parameters_global['event_offset'] = self.parameters_ncs.values()[0]['t_start']
 
         # Offset time of .nse file can not be determined for sure as there is no
         # time stamp of recording start in this file -> check by by comparison to .ncs
@@ -794,10 +818,13 @@ class NeuralynxIO(BaseIO):
         #check number of gaps detected
         if len(np.unique([len(i['gaps']) for i in self.parameters_ncs.values()])) != 1:
             raise ValueError('NCS files contain different numbers of gaps!')
-        # check consistency of gaps across files
+        # check consistency of gaps across files and create global gap collection
+        self.parameters_global['gaps'] = []
         for g in range(len(self.parameters_ncs.values()[0]['gaps'])):
             if len(np.unique([i['gaps'][g] for i in self.parameters_ncs.values()])) != 1:
                 raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
+            else:
+                self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'])
 
 
 
@@ -1026,7 +1053,7 @@ class NeuralynxIO(BaseIO):
 
     #________________ File Checks __________________________________
 
-    def __ncs_check(self,filehandle):
+    def __ncs_paket_check(self,filehandle):
         '''
         Checks consistency of data in ncs file and raises assertion error if a
         check fails. Detected recording gaps are added to parameter_ncs
@@ -1035,12 +1062,8 @@ class NeuralynxIO(BaseIO):
             filehandle (file object):
                 Handle to the already opened .ncs file.
         '''
-        # checking number of valid samples per data block
-        valid_samples = filehandle[0][3]
-        assert all([filehandle[i][3] == valid_samples for i in range(len(filehandle))])
 
-        #time stamps of data pakets
-        delta_t = filehandle[1][0] - filehandle[0][0]
+
 
 
         # checking sampling rate of data pakets
@@ -1051,22 +1074,18 @@ class NeuralynxIO(BaseIO):
         channel_id = filehandle[0][1]
         assert all([filehandle[i][1] == channel_id for i in range(len(filehandle))])
 
-        # checking sample count of data pakets
-        sample_count = filehandle[0][3]
-        assert all([filehandle[i][3] == sample_count for i in range(len(filehandle))])
+        #time offset of data pakets
+        delta_t = filehandle[1][0] - filehandle[0][0]
 
-        #sample count is checked indirectly by the memory occupied by data
-#        # checking number of samples in data paket
-#        sample_count = len(filehandle[0][4])
-#        assert all([len(filehandle[i][4]) == sample_count for i in range(len(filehandle))])
+        # valid samples of first data paket
+        temp_valid_samples = filehandle[0][3]
 
         # unit test
         # time difference between pakets corresponds to number of recorded samples
         # 10**6 due to unit conversion microsec -> sec
-        assert delta_t == (sample_count
-                           / (self.ncs_time_unit.rescale(pq.s).magnitude * sr0))
+        assert delta_t == (temp_valid_samples / (self.ncs_time_unit.rescale(pq.s).magnitude * sr0))
 
-        self._diagnostic_print('NCS file check successful.')
+        self._diagnostic_print('NCS paket check successful.')
 
 
 
@@ -1105,15 +1124,39 @@ class NeuralynxIO(BaseIO):
 
     def __ncs_gap_check(self,filehandle):
         '''
-        Checks data blocks of ncs files for consistent starting times
+        Checks data blocks of ncs files for consistent starting times.
+        This covers intended recording gaps as well as shortened data paket, which are incomplete
         '''
+
+        channel_id = filehandle[0][1]
+        if channel_id not in self.parameters_ncs:
+            self.parameters_ncs[channel_id] = {}
+
         #time stamps of data pakets
-        delta_t = filehandle[1][0] - filehandle[0][0]
-        data_paket_offsets = [filehandle[i+1][0] - filehandle[i][0] for i in range(len(filehandle)-1)]
+        delta_t = filehandle[1][0] - filehandle[0][0] #in microsec
+        data_paket_offsets = [filehandle[i+1][0] - filehandle[i][0] for i in range(len(filehandle)-1)] # in microsec
+
+        # check if delta_t corresponds to number of valid samples present in data pakets
+        valid_samples = [filehandle[i][3] for i in range(len(filehandle)-1)]
+        sampling_rate = filehandle[0][2]
+        paket_checks = valid_samples/ (self.ncs_time_unit.rescale(pq.s).magnitude * sampling_rate)==data_paket_offsets
+        if not all(paket_checks):
+            if 'broken_pakets' not in self.parameters_ncs[channel_id]:
+                self.parameters_ncs[channel_id]['broken_pakets'] = []
+            broken_pakets = np.where(np.array(paket_checks)==False)
+            for broken_paket in broken_pakets:
+                self.parameters_ncs[channel_id]['broken_pakets'].append((broken_paket,
+                                                                         valid_samples[broken_paket],
+                                                                         data_paket_offsets[broken_paket]))
+                self._diagnostic_print('Detected broken paket in NCS file at '
+                                        'paket id %i (sample number %i '
+                                        'time offset id %i)'  %(broken_paket,
+                                                         valid_samples[broken_paket],
+                                                         data_paket_offsets[broken_paket])) # in microsec
+
+
+        #checking for irregular data paket durations -> gaps / shortened data pakets
         if not all(data_paket_offsets == delta_t):
-            channel_id = filehandle[0][1]
-            if channel_id not in self.parameters_ncs:
-                self.parameters_ncs[channel_id] = {}
             if 'gaps' not in self.parameters_ncs[channel_id]:
                 self.parameters_ncs[channel_id]['gaps'] = []
             # gap identification by (sample of gap start, duration)
@@ -1128,12 +1171,11 @@ class NeuralynxIO(BaseIO):
                     or gap_paket_id + 1 in self.parameters_ncs[channel_id]['invalid_first_samples']:
                     continue
 
-                gap_start = filehandle[gap_paket_id][0] + \
-                    filehandle[gap_paket_id][3] * 10**6 / filehandle[gap_paket_id][2]
-                # gap_stop = gap_id, gap_start, number of valid samples in data packet
-                gap_stop = filehandle[gap_paket_id+1][0]
-                self.parameters_ncs[channel_id]['gaps'].append((gap_paket_id,gap_start,gap_stop))
-                self._diagnostic_print('Detected gap in NCS file at between'
+                gap_start = filehandle[gap_paket_id][0] # t_start of last paket [microsec]
+                gap_stop = filehandle[gap_paket_id+1][0] # t_stop of first paket [microsec]
+
+                self.parameters_ncs[channel_id]['gaps'].append((gap_paket_id,gap_start,gap_stop)) #[,microsec,microsec]
+                self._diagnostic_print('Detected gap in NCS file between'
                                         'sample time %i and %i  (last correct '
                                         'paket id %i)'  %(gap_start,gap_stop,
                                                             gap_paket_id))
