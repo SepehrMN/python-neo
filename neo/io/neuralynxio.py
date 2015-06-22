@@ -218,13 +218,13 @@ class NeuralynxIO(BaseIO):
         for gap in self.parameters_global['gaps']:
             gap=gap[0]
             for e in range(len(t_starts)):
-                t1,t2 = t_starts[e], t_stops[e] #TODO: Check timing here! Go on checking gap handling and consistency checks
+                t1,t2 = t_starts[e], t_stops[e]
                 gap_start = (gap[1] - self.parameters_global['t_start']) *self.ncs_time_unit
                 gap_stop = (gap[2] - self.parameters_global['t_start']) *self.ncs_time_unit
                 if ((t1==t2==None)
-                        or (t1==None and t2.rescale(self.ncs_time_unit)>gap_stop)
-                        or (t1.rescale(self.ncs_time_unit)<gap_stop and t2==None)
-                        or (t1.rescale(self.ncs_time_unit)<gap_start and t2.rescale(self.ncs_time_unit)>gap_stop)):
+                        or (t1==None and t2!=None and t2.rescale(self.ncs_time_unit)>gap_stop)
+                        or (t2==None and t1!=None and t1.rescale(self.ncs_time_unit)<gap_stop)
+                        or (t1!=None and t2!=None and t1.rescale(self.ncs_time_unit)<gap_start and t2.rescale(self.ncs_time_unit)>gap_stop)):
                     #adapting first time segment
                     t_stops[e]=gap_start
                     #inserting second time segment
