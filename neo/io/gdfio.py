@@ -80,8 +80,10 @@ class GdfIO(BaseIO):
             raise ValueError('File does not contain neuron IDs but '
                              'id_column specified to '+str(id_column)+'.')
 
+        # assert that there are spike times in the file
         if time_column is None:
-            raise ValueError('No spike times in file.')
+            raise ValueError('Time column is None. No spike times to '
+                             'be read in.')
 
         if None in gdf_id_list and id_column is not None:
             raise ValueError('No neuron IDs specified but file contains '
@@ -104,8 +106,7 @@ class GdfIO(BaseIO):
             raise TypeError('t_start (%s) is not a quantity.'%(t_start))
 
         # assert that no single column is assigned twice
-        if id_column == time_column and None not in [id_column,
-                                                     time_column]:
+        if id_column == time_column:
             raise ValueError('1 or more columns have been specified to '
                              'contain the same data.')
 
@@ -116,11 +117,6 @@ class GdfIO(BaseIO):
         # get consistent dimensions of data
         if len(data.shape)<2:
             data = data.reshape((-1,1))
-
-        # assert that there are spike times in the file
-        if time_column is None:
-            raise ValueError('Time column is None. No spike times to '
-                             'be read in.')
 
 
         # use only data from the time interval between t_start and t_stop

@@ -32,6 +32,8 @@ Classes:
 
 .. autoclass:: neo.io.ElphyIO
 
+.. autoclass:: neo.io.GdfIO
+
 .. autoclass:: neo.io.KlustaKwikIO
 
 .. autoclass:: neo.io.MicromedIO
@@ -98,6 +100,7 @@ from neo.io.brainwaresrcio import BrainwareSrcIO
 from neo.io.elanio import ElanIO
 from neo.io.elphyio import ElphyIO
 from neo.io.exampleio import ExampleIO
+from neo.io.gdfio import GdfIO
 from neo.io.klustakwikio import KlustaKwikIO
 from neo.io.micromedio import MicromedIO
 from neo.io.hdf5io import NeoHdf5IO
@@ -129,6 +132,7 @@ iolist = [AlphaOmegaIO,
           ElanIO,
           ElphyIO,
           ExampleIO,
+          GdfIO,
           KlustaKwikIO,
           MicromedIO,
           NeoHdf5IO,
