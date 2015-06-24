@@ -133,9 +133,10 @@ class NestIO(GdfIO):
         #     data = data.reshape((-1,1))
 
         # use only data from the time interval between t_start and t_stop
-        data = data[np.where(np.logical_and(
-                    data[:,time_column]>=t_start.rescale(time_unit).magnitude,
-                    data[:,time_column]<t_stop.rescale(time_unit).magnitude))]
+        data = data[np.where(np.logical_and( data[:, time_column] >=
+                                             t_start.rescale(time_unit).magnitude,
+                                             data[:, time_column] <
+                                             t_stop.rescale(time_unit).magnitude))]
 
         # create an empty list of signals and fill in the signals for each
         # GID in gid_list
@@ -143,20 +144,20 @@ class NestIO(GdfIO):
         for i in gid_list:
             # find the signal for each neuron ID
             if id_column is not None:
-                signal = data[np.where(data[:, id_column] == i)][:,value_column]
-                times = data[np.where(data[:, id_column] == i)][:,time_column]
+                signal = data[np.where(data[:, id_column] == i)][:, value_column]
+                times = data[np.where(data[:, id_column] == i)][:, time_column]
             else:
                 signal = data[:, value_column]
                 times = data[:, time_column]
             
-            if id_column is None and len(np.unique(times))<len(times):
+            if id_column is None and len(np.unique(times)) < len(times):
                 raise ValueError('No ID column specified but recorded '
                                  'from multiple neurons.')
 
             if sampling_period is None:
-                sampling_period = pq.CompoundUnit(str((times[1]-times[0]))+'*'+time_unit.units.u_symbol)  # Could be
-                                                  # inaccurate because
-                                                  # of floats
+                # Could be inaccurate because of floats
+                dt = times[1]-times[0]
+                sampling_period = pq.CompoundUnit(str(dt)+'*'+time_unit.units.u_symbol)  
             elif not isinstance(sampling_period, pq.UnitQuantity):
                 raise ValueError("sampling_period is not specified as a unit.")
 
@@ -166,7 +167,6 @@ class NestIO(GdfIO):
                    t_start.rescale(sampling_period).magnitude-1)
 
             # create AnalogSinalArray objects and annotate them with the neuron ID
-            
             analogsignal_list.append(AnalogSignalArray(signal*value_unit,
                                                        sampling_period=sampling_period,
                                                        t_start=t_start,
@@ -176,7 +176,6 @@ class NestIO(GdfIO):
 
         return analogsignal_list
         
-
     def read_segment(self, lazy=False, cascade=True, gid_list=None,
                      time_unit=pq.ms, t_start=0.*pq.ms, t_stop=None,
                      sampling_period=None, id_column=0, time_column=1,
@@ -228,7 +227,6 @@ class NestIO(GdfIO):
                                                         value_unit=value_unit)
 
         return seg
-
 
     def read_analogsignalarray( self, lazy=False, cascade=True,
                                 gid=None, time_unit=pq.ms, t_start=0 * pq.ms,
