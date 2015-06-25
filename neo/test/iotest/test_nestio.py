@@ -23,6 +23,12 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
     files_to_download = []
 
     def test_read_analogsignalarray(self):
+        '''
+        Tests reading files in the 4 different formats:
+        - with GIDs, with times as floats
+        - with GIDs, with times as integers in time steps
+        '''
+
         r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
         r.read_analogsignalarray(gid=1, t_stop=1000.*pq.ms,
                                  sampling_period=pq.ms, lazy=False,
@@ -46,6 +52,12 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
                        value_type='V_m')
 
     def test_id_column_none_multiple_neurons(self):
+        '''
+        Tests if function correctly raises an error if the user tries to read
+        from a file which does not contain neuron IDs, but data for multiple
+        neurons.
+        '''
+
         r = NestIO(filename='nest_test_files/withgidF-time_in_stepsF-1258-0.dat')
         with self.assertRaises(ValueError):
             r.read_analogsignalarray(t_stop=1000.*pq.ms, lazy=False,
@@ -69,6 +81,10 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
 
 
     def test_values(self):
+        '''
+        Tests if the function returns the correct values.
+        '''
+
         id_to_test = 1
         r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
         seg = r.read_segment(gid_list=[id_to_test],
@@ -83,6 +99,10 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
         np.testing.assert_array_equal(st.magnitude, target_data)
 
     def test_read_segment(self):
+        '''
+        Tests if signals are correctly stored in a segment.
+        '''
+
         r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
 
         id_list_to_test = range(1, 10)
@@ -104,22 +124,28 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
         self.assertTrue(len(seg.analogsignalarrays) == 50)
 
     def test_wrong_input(self):
+        '''
+        Tests two cases of wrong user input, namely
+        - User does not specify a value column
+        - User does not make any specifications
+        - User does not define sampling_period as a unit
+        - User specifies a non-default value type without
+          specifying a value_unit
+        '''
+
         r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
         with self.assertRaises(ValueError):
             r.read_segment(t_stop=1000.*pq.ms, lazy=False,
                            id_column=0, time_column=1)
         with self.assertRaises(ValueError):
             r.read_segment()
-        with self.assertRaises(ValueError):  # sampling_period not
-                                             # defined as unit
+        with self.assertRaises(ValueError):
             r.read_segment(gid_list=[1], t_stop=1000.*pq.ms,
                            sampling_period=1.*pq.ms, lazy=False,
                            id_column=0, time_column=1,
                            value_column=2, value_type='V_m')
 
-        with self.assertRaises(ValueError):  # non-default value type
-                                             # specified without
-                                             # value_unit
+        with self.assertRaises(ValueError): 
             r.read_segment(gid_list=[1], t_stop=1000.*pq.ms,
                            sampling_period=1.*pq.ms, lazy=False,
                            id_column=0, time_column=1,
