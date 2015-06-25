@@ -131,6 +131,7 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
         - User does not define sampling_period as a unit
         - User specifies a non-default value type without
           specifying a value_unit
+        - User specifies t_start < 1.*sampling_period
         '''
 
         r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
@@ -147,25 +148,34 @@ class TestNestIO(BaseTestIO, unittest.TestCase):
 
         with self.assertRaises(ValueError): 
             r.read_segment(gid_list=[1], t_stop=1000.*pq.ms,
-                           sampling_period=1.*pq.ms, lazy=False,
+                           sampling_period=pq.ms, lazy=False,
                            id_column=0, time_column=1,
                            value_column=2, value_type='U_mem')
 
+        with self.assertRaises(ValueError): 
+            r.read_segment(gid_list=[1], t_start=0.*pq.ms, t_stop=1000.*pq.ms,
+                           sampling_period=pq.ms, lazy=False,
+                           id_column=0, time_column=1,
+                           value_column=2, value_type='V_m')
 
 
-    # def test_t_start_t_stop(self):
-    #     r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1255-0.dat')
+    def test_t_start_t_stop(self):
+        r = NestIO(filename='nest_test_files/withgidT-time_in_stepsF-1259-0.dat')
 
-    #     t_stop_targ = 100.*pq.ms
-    #     t_start_targ = 50.*pq.ms
+        t_stop_targ = 100.*pq.ms
+        t_start_targ = 50.*pq.ms
 
-    #     seg = r.read_segment(gid_list=[], t_start= t_start_targ, t_stop=t_stop_targ, lazy=False, id_column=0, time_column=1)
-    #     sts = seg.analogsignalarrays
-    #     self.assertTrue(np.max([np.max(st.magnitude) for st in sts])<t_stop_targ.rescale(sts[0].times.units).magnitude)
-    #     self.assertTrue(np.min([np.min(st.magnitude) for st in sts])>=t_start_targ.rescale(sts[0].times.units).magnitude)
+        seg = r.read_segment(gid_list=[], t_start=t_start_targ,
+                             t_stop=t_stop_targ, lazy=False,
+                             id_column=0, time_column=1,
+                             value_column=2, value_type='V_m')
+        sts = seg.analogsignalarrays
+        for st in sts:
+            self.assertTrue(st.t_start == t_start_targ)
+            self.assertTrue(st.t_stop == t_stop_targ)
 
 if __name__ == "__main__":
     unittest.main()
     # suite = unittest.TestSuite()
-    # suite.addTest(TestNestIO('test_wrong_input'))
+    # suite.addTest(TestNestIO('test_read_analogsignalarray'))
     # unittest.TextTestRunner(verbosity=2).run(suite)
