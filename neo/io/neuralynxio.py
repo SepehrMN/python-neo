@@ -900,7 +900,7 @@ class NeuralynxIO(BaseIO):
 
             # extracting datetime entries in header
             datetime_struct = re.compile('## Time (?P<mode>.{6}) \(m/d/y\): (?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})  '
-                                                        '\(h:m:s\.ms\) (?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\.(?P<millisecond>\d{2,3})')
+                                                        '\(h:m:s\.ms\) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})\.(?P<millisecond>\d{1,3})')
 
             for line in [2,3]:
                 datetime = datetime_struct.match(ncs_text_header[line])
