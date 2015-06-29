@@ -18,6 +18,7 @@ import logging
 import struct
 import warnings
 import copy
+import re
 
 import numpy as np
 import quantities as pq
@@ -383,74 +384,11 @@ class NeuralynxIO(BaseIO):
         this recording session
         '''
 
-        channel_id = [k for k in self.parameters_ncs.keys() if self.parameters_ncs[k]['filename'] == filename_ncs]
-        if len(channel_id) == 1:
-            chid = channel_id[0]
-        else:
+
+        chid = self.get_channel_id_by_ncs_name(filename_ncs)
+        if chid == None:
             raise ValueError('NeuralynxIO is attempting to read a file '
                             'not associated to this session (%s).'%(filename_ncs))
-
-
-
-
-        # Reading main file header (plain text, 16kB)
-        ncs_text_header = open(self.sessiondir + '/' + filename_ncs,'r').read(16384)
-        #separating lines of header and ignoring last line (fill)
-        ncs_text_header = ncs_text_header.split('\r\n')[:-1]
-        try:
-            # checking title of header
-            if ncs_text_header[0] != '######## Neuralynx Data File Header':
-                raise TypeError('NCS file has unkown Neuralynx header title')
-
-            # extracting major entries in header
-            if  ncs_text_header[1].startswith('## File Name ') \
-                and ncs_text_header[2].startswith('## Time Opened (m/d/y): ') \
-                and '(h:m:s.ms)' in ncs_text_header[2] \
-                and ncs_text_header[3].startswith('## Time Closed (m/d/y): ') \
-                and '(h:m:s.ms)' in ncs_text_header[3]:
-
-
-                self.parameters_ncs[chid]['Original_File_Name'] =  ncs_text_header[1].replace('## File Name ','')
-                # Separating 'Time Opened/Closed' into date and time information # TODO: extract individual values for year/month/day/hour/minute/second/microsec
-                self.parameters_ncs[chid]['Date_Opened_(m/d/y)'] = ncs_text_header[2].replace('## Time Opened (m/d/y): ','').split('(h:m:s.ms)')[0]
-                self.parameters_ncs[chid]['Time_Opened_(h:m:s.ms)'] = ncs_text_header[2].replace('## Time Opened (m/d/y): ','').split('(h:m:s.ms)')[1]
-                self.parameters_ncs[chid]['Date_Closed_(m/d/y)'] = ncs_text_header[3].replace('## Time Closed (m/d/y): ','').split('(h:m:s.ms)')[0]
-                self.parameters_ncs[chid]['Time_Closed_(h:m:s.ms)'] = ncs_text_header[3].replace('## Time Closed (m/d/y): ','').split('(h:m:s.ms)')[1]
-            else:
-                raise TypeError('NCS file has unknown major parameters in header')
-
-            # minor parameters posssibly saved in header
-            ncs_minor_keys =  ['CheetahRev','AcqEntName','FileType','RecordSize',
-                              'HardwareSubSystemName','HardwareSubSystemType',
-                              'SamplingFrequency','ADMaxValue','ADBitVolts','NumADChannels',
-                              'ADChannel','InputRange','InputInverted','DSPLowCutFilterEnabled',
-                              'DspLowCutFrequency','DspLowCutNumTaps','DspLowCutFilterType',
-                              'DSPHighCutFilterEnabled','DspHighCutFrequency','DspHighCutNumTaps',
-                              'DspHighCutFilterType','DspDelayCompensation','DspFilterDelay_\xb5s']
-
-
-            #extracting minor key values of header (only taking into account non-empty lines)
-            for i, minor_entry in enumerate([text for text in ncs_text_header[4:] if text != '']):
-                if minor_entry.split(' ')[0] in ['-' + ncs_minor_keys[i] for i in range(len(ncs_minor_keys))]:
-
-                    # determine data type of entry
-                    minor_value = minor_entry.split(' ')[1]
-                    if minor_value.isdigit():
-                        minor_value = int(minor_value)
-                    else:
-                        try:
-                            minor_value = float(minor_value)
-                        except:
-                            pass
-
-                    # assign value of correct data type to ncs parameter dictionary
-                    self.parameters_ncs[chid][minor_entry.split(' ')[0][1:]] = minor_value
-
-            self._diagnostic_print('Successfully decoded text header of ncs file (%s).'%(filename_ncs))
-
-        except TypeError:
-            warnings.warn('WARNING: NeuralynxIO is unable to extract data from text header! \
-                            Continue with loading data.')
 
         if not cascade:
             return
@@ -708,11 +646,16 @@ class NeuralynxIO(BaseIO):
             # Loading individual NCS file and extracting parameters
             self._diagnostic_print("Scanning " + ncs_file + ".")
 
-            # Reading file headers
+
+            # Reading file paket headers
             filehandle = self.__mmap_ncs_paket_headers(ncs_file)
 
-            # Reading header information and store them in parameters_ncs
-            self.__read_ncs_header(filehandle, ncs_file)
+            # Reading data paket header information and store them in parameters_ncs
+            self.__read_ncs_data_headers(filehandle, ncs_file)
+
+            # Reading txt file header
+            channel_id = self.get_channel_id_by_ncs_name(ncs_file)
+            self.__read_ncs_text_header(ncs_file,channel_id)
 
             if check_files:
                 # Checking consistency of ncs file
@@ -939,7 +882,73 @@ class NeuralynxIO(BaseIO):
 
     #___________________________ header extraction __________________________
 
-    def __read_ncs_header(self, filehandle, filename):
+    def __read_ncs_text_header(self, filename_ncs, chid):
+                # Reading main file header (plain text, 16kB)
+        ncs_text_header = open(self.sessiondir + '/' + filename_ncs,'r').read(16384)
+        #separating lines of header and ignoring last line (fill)
+        ncs_text_header = ncs_text_header.split('\r\n')[:-1]
+        try:
+            # checking title of header
+            if ncs_text_header[0] != '######## Neuralynx Data File Header':
+                raise TypeError('NCS file has unkown Neuralynx header title')
+
+            filename_struct = re.compile('## File Name (?P<filename>.{1,})')
+            # extracting filename
+            filename_match = filename_struct.match(ncs_text_header[1])
+            if filename_match:
+                self.parameters_ncs[chid]['Original_File_Name'] = filename_match.groupdict().values()[0]
+
+            # extracting datetime entries in header
+            datetime_struct = re.compile('## Time (?P<mode>.{6}) \(m/d/y\): (?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})  '
+                                                        '\(h:m:s\.ms\) (?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})\.(?P<millisecond>\d{2,3})')
+
+            for line in [2,3]:
+                datetime = datetime_struct.match(ncs_text_header[line])
+                if datetime:
+                    mode = datetime.groupdict().pop('mode').lower()
+                    self.parameters_ncs[chid]['recording_' + mode]={}
+                    for key,value in datetime.groupdict().iteritems():
+                            self.parameters_ncs[chid]['recording_' + mode][key] = value
+                else:
+                    raise TypeError('NCS file has unknown major parameters in header')
+
+            # minor parameters posssibly saved in header
+            ncs_minor_keys =  ['CheetahRev','AcqEntName','FileType','RecordSize',
+                              'HardwareSubSystemName','HardwareSubSystemType',
+                              'SamplingFrequency','ADMaxValue','ADBitVolts','NumADChannels',
+                              'ADChannel','InputRange','InputInverted','DSPLowCutFilterEnabled',
+                              'DspLowCutFrequency','DspLowCutNumTaps','DspLowCutFilterType',
+                              'DSPHighCutFilterEnabled','DspHighCutFrequency','DspHighCutNumTaps',
+                              'DspHighCutFilterType','DspDelayCompensation','DspFilterDelay_\xb5s']
+
+
+            #extracting minor key values of header (only taking into account non-empty lines)
+            for i, minor_entry in enumerate([text for text in ncs_text_header[4:] if text != '']):
+                if minor_entry.split(' ')[0] in ['-' + ncs_minor_keys[i] for i in range(len(ncs_minor_keys))]:
+
+                    # determine data type of entry
+                    minor_value = minor_entry.split(' ')[1]
+                    if minor_value.isdigit():
+                        minor_value = int(minor_value)
+                    else:
+                        try:
+                            minor_value = float(minor_value)
+                        except:
+                            pass
+
+                    # assign value of correct data type to ncs parameter dictionary
+                    self.parameters_ncs[chid][minor_entry.split(' ')[0][1:]] = minor_value
+
+            self._diagnostic_print('Successfully decoded text header of ncs file (%s).'%(filename_ncs))
+
+        except TypeError:
+            warnings.warn('WARNING: NeuralynxIO is unable to extract data from text header! '
+                             'Continue with loading data.')
+
+
+
+
+    def __read_ncs_data_headers(self, filehandle, filename):
         '''
         Reads the .ncs data block headers and stores the information in the
         object's parameters_ncs dictionary.
@@ -1209,6 +1218,15 @@ class NeuralynxIO(BaseIO):
                 != 2* (t_starts[invalid_paket_id-1] - t_starts[invalid_paket_id-2])):
                     raise ValueError('Starting times of ncs data pakets around'
                                      'corrupted data paket are not consistent!')
+
+
+    ############ Supplementory Functions ###########################
+    def get_channel_id_by_ncs_name(self,filename_ncs):
+        channel_id = [k for k in self.parameters_ncs.keys() if self.parameters_ncs[k]['filename'] == filename_ncs]
+        if len(channel_id) == 1:
+            return channel_id[0]
+        else:
+            return None
 
 
 
