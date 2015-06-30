@@ -19,6 +19,7 @@ import struct
 import warnings
 import copy
 import re
+import datetime
 
 import numpy as np
 import quantities as pq
@@ -649,6 +650,8 @@ class NeuralynxIO(BaseIO):
 
             # Reading file paket headers
             filehandle = self.__mmap_ncs_paket_headers(ncs_file)
+            if filehandle == None:
+                continue
 
             # Reading data paket header information and store them in parameters_ncs
             self.__read_ncs_data_headers(filehandle, ncs_file)
@@ -739,6 +742,8 @@ class NeuralynxIO(BaseIO):
            t_first = self.parameters_nse.values()[0]['t_first']
         else: t_first = np.inf #using inf, because None is handles as if neg. number
 
+        # TODO: check recording opened and recording closed for all files available (from txt header)!
+
         #setting global time frame
         if self.nev_avail!=[]:
             self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
@@ -824,10 +829,11 @@ class NeuralynxIO(BaseIO):
 
     def __mmap_ncs_data(self,filename):
         """ Memory map of the Neuralynx .ncs file optimized for data extraction"""
-
-        data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype(('i2',(522))),mode='r', offset=16384)
-        #removing data paket headers and flattening data
-        return data[:,10:]
+        if getsize(self.sessiondir + '/' + filename) > 16384:
+            data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype(('i2',(522))),mode='r', offset=16384)
+            #removing data paket headers and flattening data
+            return data[:,10:]
+        else: return None
 
     def __mmap_ncs_time_stamps(self,filename):
         """ Memory map of the Neuralynx .ncs file optimized for extraction of time stamps of data pakets"""
@@ -836,15 +842,16 @@ class NeuralynxIO(BaseIO):
 
     def __mmap_ncs_paket_headers(self,filename):
         """ Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers"""
-        data = np.memmap(self.sessiondir + '/' + filename,
-                                dtype=np.dtype([('timestamp','<u8'),
-                                                ('channel_number', '<u4'),
-                                                ('sample_freq', '<u4'),
-                                                ('valid_samples', '<u4'),
-                                                ('rest','V%s'%(512*2))]),
-                                mode='r', offset=16384)
-        return copy.deepcopy(np.array([np.array([i[0],i[1],i[2],i[3]])
-                                                        for i in data]))
+        if getsize(self.sessiondir + '/' + filename) > 16384:
+            data = np.memmap(self.sessiondir + '/' + filename,
+                                    dtype=np.dtype([('timestamp','<u8'),
+                                                    ('channel_number', '<u4'),
+                                                    ('sample_freq', '<u4'),
+                                                    ('valid_samples', '<u4'),
+                                                    ('rest','V%s'%(512*2))]),
+                                    mode='r', offset=16384)
+            return copy.deepcopy(np.array([np.array([i[0],i[1],i[2],i[3]]) for i in data]))
+        else: return None
 
     def __mmap_nev_file(self, filename):
         """ Memory map the Neuralynx .nev file """
@@ -861,9 +868,11 @@ class NeuralynxIO(BaseIO):
             ('extra', '<i4',   (8,)),
             ('event_string', 'a128'),
         ])
-        return np.memmap(self.sessiondir + '/' + filename,
-                                     dtype=nev_dtype, mode='r', offset=16384)
 
+        if getsize(self.sessiondir + '/' + filename) > 16384:
+            return np.memmap(self.sessiondir + '/' + filename,
+                                         dtype=nev_dtype, mode='r', offset=16384)
+        else: return None
 
     def __mmap_ntt_file(self, filename):
         """ Memory map the Neuralynx .nse file """
@@ -874,9 +883,10 @@ class NeuralynxIO(BaseIO):
             ('params', '<u4',   (8,)),
             ('data', '<i2', (32, 4)),
         ])
-        return np.memmap(self.sessiondir + '/' + filename,
-                                     dtype=nse_dtype, mode='r', offset=16384)
-
+        if getsize(self.sessiondir + '/' + filename) > 16384:
+            return np.memmap(self.sessiondir + '/' + filename,
+                                         dtype=nse_dtype, mode='r', offset=16384)
+        else: return None
 
 
 
@@ -899,20 +909,25 @@ class NeuralynxIO(BaseIO):
                 self.parameters_ncs[chid]['Original_File_Name'] = filename_match.groupdict().values()[0]
 
             # extracting datetime entries in header
-            datetime_struct = re.compile('## Time (?P<mode>.{6}) \(m/d/y\): (?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})  '
+            datetime_struct = re.compile('## Time (?P<mode>\S{6}) \(m/d/y\): (?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})  '
                                                         '\(h:m:s\.ms\) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})\.(?P<millisecond>\d{1,3})')
 
             for line in [2,3]:
-                datetime = datetime_struct.match(ncs_text_header[line])
-                if datetime:
-                    mode = datetime.groupdict().pop('mode').lower()
-                    self.parameters_ncs[chid]['recording_' + mode]={}
-                    for key,value in datetime.groupdict().iteritems():
-                            self.parameters_ncs[chid]['recording_' + mode][key] = value
+                datetime_match = datetime_struct.match(ncs_text_header[line])
+                if datetime_match:
+                    datetime_dict = datetime_match.groupdict()
+                    mode = datetime_dict.pop('mode').lower()
+                    self.parameters_ncs[chid]['recording_' + mode] = datetime.datetime(int(datetime_dict['year']),
+                                                                                       int(datetime_dict['month']),
+                                                                                       int(datetime_dict['day']),
+                                                                                       int(datetime_dict['hour']),
+                                                                                       int(datetime_dict['minute']),
+                                                                                       int(datetime_dict['second']),
+                                                                                       1000*int(datetime_dict['millisecond']))
                 else:
                     raise TypeError('NCS file has unknown major parameters in header')
 
-            # minor parameters posssibly saved in header
+            # minor parameters possibly saved in header
             ncs_minor_keys =  ['CheetahRev','AcqEntName','FileType','RecordSize',
                               'HardwareSubSystemName','HardwareSubSystemType',
                               'SamplingFrequency','ADMaxValue','ADBitVolts','NumADChannels',
@@ -942,8 +957,8 @@ class NeuralynxIO(BaseIO):
             self._diagnostic_print('Successfully decoded text header of ncs file (%s).'%(filename_ncs))
 
         except TypeError:
-            warnings.warn('WARNING: NeuralynxIO is unable to extract data from text header! '
-                             'Continue with loading data.')
+            warnings.warn('WARNING: NeuralynxIO is unable to extract data from text header in ncs file %s! '
+                             'Continue with loading data.'%(filename_ncs))
 
 
 
@@ -1152,7 +1167,7 @@ class NeuralynxIO(BaseIO):
         if not all(paket_checks):
             if 'broken_pakets' not in self.parameters_ncs[channel_id]:
                 self.parameters_ncs[channel_id]['broken_pakets'] = []
-            broken_pakets = np.where(np.array(paket_checks)==False)
+            broken_pakets = np.where(np.array(paket_checks)==False)[0]
             for broken_paket in broken_pakets:
                 self.parameters_ncs[channel_id]['broken_pakets'].append((broken_paket,
                                                                          valid_samples[broken_paket],
