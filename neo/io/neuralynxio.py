@@ -400,7 +400,7 @@ class NeuralynxIO(BaseIO):
 
 
         #read data
-        header_time_data = self.__mmap_ncs_time_stamps(filename_ncs)
+        header_time_data = self.__mmap_ncs_paket_headers(filename_ncs)[0]
 
         data = self.__mmap_ncs_data(filename_ncs)
 
@@ -690,16 +690,20 @@ class NeuralynxIO(BaseIO):
             if filehandle == None:
                 continue
 
+            try:
+                if check_files:
+                    # Checking consistency of ncs file
+                    self.__ncs_paket_check(filehandle)
+            except AssertionError:
+                warnings.warn('Session file %s did not pass data packet check. This file can not be loaded.'%ncs_file)
+                continue
+
             # Reading data paket header information and store them in parameters_ncs
             self.__read_ncs_data_headers(filehandle, ncs_file)
 
             # Reading txt file header
             channel_id = self.get_channel_id_by_file_name(ncs_file)
             self.__read_ncs_text_header(ncs_file,channel_id)
-
-            if check_files:
-                # Checking consistency of ncs file
-                self.__ncs_paket_check(filehandle)
 
             # Check for invalid starting times of data pakets in ncs file
             self.__ncs_invalid_first_sample_check(filehandle)
@@ -892,23 +896,40 @@ class NeuralynxIO(BaseIO):
             return data[:,10:]
         else: return None
 
-    def __mmap_ncs_time_stamps(self,filename):
-        """ Memory map of the Neuralynx .ncs file optimized for extraction of time stamps of data pakets"""
-        data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype([('timestamp','<u8'),('rest','V%s'%(512*2+12))]),mode='r', offset=16384)
-        return copy.deepcopy(np.array([i[0] for i in data],dtype=np.dtype('u8')))
+    # def __mmap_ncs_time_stamps(self,filename):
+    #     """ Memory map of the Neuralynx .ncs file optimized for extraction of time stamps of data pakets"""
+    #     data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype([('timestamp','<u8'),('rest','V%s'%(512*2+12))]),mode='r', offset=16384)
+    #     return copy.deepcopy(np.array([i[0] for i in data],dtype=np.dtype('u8')))
 
     def __mmap_ncs_paket_headers(self,filename):
-        """ Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers"""
-        if getsize(self.sessiondir + '/' + filename) > 16384:
+        """
+        Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers
+        Reading standard dtype improves speed, but timestamps need to be reconstructed
+        """
+        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        if filesize > 16384:
             data = np.memmap(self.sessiondir + '/' + filename,
-                                    dtype=np.dtype([('timestamp','<u8'),
-                                                    ('channel_number', '<u4'),
-                                                    ('sample_freq', '<u4'),
-                                                    ('valid_samples', '<u4'),
-                                                    ('rest','V%s'%(512*2))]),
-                                    mode='r', offset=16384)
-            return copy.deepcopy(np.array([np.array([i[0],i[1],i[2],i[3]]) for i in data]))
+                            dtype='<u4', shape = ((filesize-16384)/4/261,261),
+                            mode='r', offset=16384)
+
+            timestamps = data[:,0] + (data[:,1] *2**32)
+            header_u4 = data[:,2:5]
+            del data
+            return timestamps, header_u4
         else: return None
+
+    # def __mmap_ncs_paket_headers(self,filename):
+    #     """ Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers"""
+    #     if getsize(self.sessiondir + '/' + filename) > 16384:
+    #         data = np.memmap(self.sessiondir + '/' + filename,
+    #                                 dtype=np.dtype([('timestamp','<u8'),
+    #                                                 ('channel_number', '<u4'),
+    #                                                 ('sample_freq', '<u4'),
+    #                                                 ('valid_samples', '<u4'),
+    #                                                 ('rest','V%s'%(512*2))]),
+    #                                 mode='r', offset=16384)
+    #         return copy.deepcopy(np.array([np.array([i[0],i[1],i[2],i[3]]) for i in data]))
+    #     else: return None
 
     def __mmap_nev_file(self, filename):
         """ Memory map the Neuralynx .nev file """
@@ -1072,20 +1093,20 @@ class NeuralynxIO(BaseIO):
         Returns:
             dict of extracted data
         '''
+        timestamps = filehandle[0]
+        header_u4 = filehandle[1]
 
-        t_start = filehandle[0][0] # in microseconds
+        channel_id = header_u4[0][0]
+        sr = header_u4[0][1] # in Hz
+
+        t_start = timestamps[0] # in microseconds
         #calculating corresponding time stamp of first sample, that was not
         #recorded any more
-        #       time of first sample in last paket + (number of sample per paket *
-        t_stop = filehandle[-1][0] + ((filehandle[-1][3]) *
-                 # conversion factor (time are recorded in ms)
-                 (1/self.ncs_time_unit.rescale(pq.s)).magnitude /
-                 filehandle[-1][2]) # sampling rate
-        channel_id = filehandle[0][1]
-        sr = filehandle[0][2] # in Hz
+        #       time of first sample in last paket + (number of sample per paket * conversion factor (time are recorded in ms) / sampling rate
+        t_stop = timestamps[-1] + ((header_u4[-1][2]) * (1/self.ncs_time_unit.rescale(pq.s)).magnitude / header_u4[-1][1])
 
         if channel_id in self.parameters_ncs:
-            raise ValueError('Detected multiple files for channel_id %i.'%(channel_id))
+            raise ValueError('Detected multiple ncs files for channel_id %i.'%(channel_id))
         else:
             self.parameters_ncs[channel_id] = { 'filename':filename,
                                                 't_start': t_start,
@@ -1186,21 +1207,24 @@ class NeuralynxIO(BaseIO):
         '''
 
 
+        timestamps = filehandle[0]
+        header_u4 = filehandle[1]
 
 
         # checking sampling rate of data pakets
-        sr0 = filehandle[0][2]
-        assert all([filehandle[i][2] == sr0 for i in range(len(filehandle))])
+        sr0 = header_u4[0,1]
+        assert all(header_u4[:,1] == sr0)
 
         # checking channel id of data pakets
-        channel_id = filehandle[0][1]
-        assert all([filehandle[i][1] == channel_id for i in range(len(filehandle))])
+        channel_id = header_u4[0,0]
+        assert all(header_u4[:,0] == channel_id)
 
         #time offset of data pakets
-        delta_t = filehandle[1][0] - filehandle[0][0]
+        # this is a not safe assumption, that the first two data packets have correct time stamps
+        delta_t = timestamps[1] - timestamps[0]
 
         # valid samples of first data paket
-        temp_valid_samples = filehandle[0][3]
+        temp_valid_samples = header_u4[0,2]
 
         # unit test
         # time difference between pakets corresponds to number of recorded samples
@@ -1246,23 +1270,25 @@ class NeuralynxIO(BaseIO):
 
     def __ncs_gap_check(self,filehandle):
         '''
-        Checks data blocks of ncs files for consistent starting times.
+        Checks individual data blocks of ncs files for consistent starting times with respect to sample count.
         This covers intended recording gaps as well as shortened data paket, which are incomplete
         '''
 
-        channel_id = filehandle[0][1]
+        timestamps = filehandle[0]
+        header_u4 = filehandle[1]
+        channel_id = header_u4[0,0]
         if channel_id not in self.parameters_ncs:
             self.parameters_ncs[channel_id] = {}
 
         #time stamps of data pakets
-        delta_t = filehandle[1][0] - filehandle[0][0] #in microsec
-        data_paket_offsets = [filehandle[i+1][0] - filehandle[i][0] for i in range(len(filehandle)-1)] # in microsec
+        delta_t = timestamps[1] - timestamps[0] #in microsec
+        data_paket_offsets = np.diff(timestamps) # in microsec
 
         # check if delta_t corresponds to number of valid samples present in data pakets
         # NOTE: This also detects recording gaps!
-        valid_samples = [filehandle[i][3] for i in range(len(filehandle)-1)]
-        sampling_rate = filehandle[0][2]
-        paket_checks = valid_samples/ (self.ncs_time_unit.rescale(pq.s).magnitude * sampling_rate)==data_paket_offsets
+        valid_samples = header_u4[:-1,2]
+        sampling_rate = header_u4[0,1]
+        paket_checks = (valid_samples / (self.ncs_time_unit.rescale(pq.s).magnitude * sampling_rate)) == data_paket_offsets
         if not all(paket_checks):
             if 'broken_pakets' not in self.parameters_ncs[channel_id]:
                 self.parameters_ncs[channel_id]['broken_pakets'] = []
@@ -1294,8 +1320,8 @@ class NeuralynxIO(BaseIO):
                     or gap_paket_id + 1 in self.parameters_ncs[channel_id]['invalid_first_samples']:
                     continue
 
-                gap_start = filehandle[gap_paket_id][0] # t_start of last paket [microsec]
-                gap_stop = filehandle[gap_paket_id+1][0] # t_stop of first paket [microsec]
+                gap_start = timestamps[gap_paket_id] # t_start of last paket [microsec]
+                gap_stop = timestamps[gap_paket_id+1] # t_stop of first paket [microsec]
 
                 self.parameters_ncs[channel_id]['gaps'].append((gap_paket_id,gap_start,gap_stop)) #[,microsec,microsec]
                 self._diagnostic_print('Detected gap in NCS file between'
@@ -1310,13 +1336,13 @@ class NeuralynxIO(BaseIO):
         a missing first sample in the data paket. These are then excluded from
         the gap check, but ignored for further analysis.
         '''
-        channel_id = filehandle[0][1]
+        timestamps = filehandle[0]
+        header_u4 = filehandle[1]
+        channel_id = header_u4[0,0]
         self.parameters_ncs[channel_id]['invalid_first_samples'] = []
 
-        # collating starting times of data pakets
-        t_starts = np.array([f[0] for f in filehandle])
         #checking if first bit of timestamp is 1, which indicates error
-        invalid_paket_ids = np.where(t_starts >= 3.6028797018963968*10**16)[0]
+        invalid_paket_ids = np.where(timestamps >= 2**55)[0]
         if len(invalid_paket_ids)>0:
             warnings.warn('Invalid first sample(s) detected in ncs file'
                             '(paket id(s) %i)! This error is ignored in'
@@ -1328,8 +1354,8 @@ class NeuralynxIO(BaseIO):
                 if invalid_paket_id < 2 or invalid_paket_id > len(filehandle) -2:
                     raise ValueError('Corrupted ncs data paket at the beginning'
                                         'or end of file.')
-                elif (t_starts[invalid_paket_id+1] - t_starts[invalid_paket_id-1]
-                != 2* (t_starts[invalid_paket_id-1] - t_starts[invalid_paket_id-2])):
+                elif (timestamps[invalid_paket_id+1] - timestamps[invalid_paket_id-1]
+                != 2* (timestamps[invalid_paket_id-1] - timestamps[invalid_paket_id-2])):
                     raise ValueError('Starting times of ncs data pakets around'
                                      'corrupted data paket are not consistent!')
 
