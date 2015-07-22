@@ -17,6 +17,7 @@ from __future__ import absolute_import, division
 import logging
 import struct
 import sys
+import os
 import warnings
 import copy
 import re
@@ -35,8 +36,8 @@ from neo.io import tools
 from os import listdir
 from os.path import isfile, join, getsize
 
-
-
+import hashlib
+import pickle
 
 class NeuralynxIO(BaseIO):
     """
@@ -593,7 +594,7 @@ class NeuralynxIO(BaseIO):
 
 
         # reading data
-        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = self.__mmap_nse_packets(filename_nse)
+        [timestamps, channel_ids, cell_numbers, features, data_points] = self.__mmap_nse_packets(filename_nse)
 
 
         # collecting spike times for each individual unit (assuming unit numbers
@@ -623,7 +624,7 @@ class NeuralynxIO(BaseIO):
             if waveforms and not lazy:
                 # Collect all waveforms of the specific unit
                 # For computational reasons: no units, no time axis
-                st.waveforms = np.array([data_points[t,:] for t in range(len(timestamps)) if unit_ids[t]==unit_i])
+                st.waveforms = np.array([data_points[t,:] for t in range(len(timestamps)) if cell_numbers[t]==unit_i])
 
             # annotation of spiketrains?
             seg.spiketrains.append(st)
@@ -669,6 +670,37 @@ class NeuralynxIO(BaseIO):
         self.nev_avail = []
         self.ntt_avail = []
 
+        # check if there are any changes of the data files -> new data check run
+        check_files = True
+        if cachedir != None:
+            cachefile = cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys'
+            if not os.path.exists(cachedir + '/' + self.sessiondir.split('/')[-1]):
+                os.makedirs(cachedir + '/' + self.sessiondir.split('/')[-1])
+
+            if os.path.exists(cachefile):
+                hashes_read = pickle.load(open(cachefile, 'rb') )
+            else: hashes_read = {}
+
+            hashes_calc = {f:self.hashfile(open(self.sessiondir + '/' + f, 'rb'), hashlib.sha256()) for f in self.sessionfiles}
+            if all([f in hashes_calc and f in hashes_read and hashes_calc[f] == hashes_read[f] for f in self.sessionfiles]):
+                check_files = False
+                self._diagnostic_print('Using cached metadata from earlier analysis run in file %s. Skip file checks.'%cachefile)
+
+                # loading saved parameters
+                parameterfile = cachedir + '/' + self.sessiondir.split('/')[-1] + '/parameters.cache'
+                if os.path.exists(parameterfile):
+                    parameters_read = pickle.load(open(parameterfile, 'rb') )
+                else:
+                    raise IOError('Inconsistent cache files.')
+
+                for IOdict, dictname in [(self.parameters_global,'global'),
+                                         (self.parameters_ncs,'ncs'),
+                                         (self.parameters_nse,'nse'),
+                                         (self.parameters_nev,'nev'),
+                                         (self.parameters_ntt,'ntt')]:
+                    IOdict.update(parameters_read[dictname])
+
+
         for filename in self.sessionfiles:
             # Extracting only continuous signal files (.ncs)
             if filename[-4:] == '.ncs':
@@ -682,135 +714,133 @@ class NeuralynxIO(BaseIO):
             else:
                 self._diagnostic_print('Ignoring file of unknown data type %s'%filename)
 
-            if cachedir!=None:
-                pass
+        if check_files:
+            self._diagnostic_print('Starting individual file checks.')
+            #=======================================================================
+            # # Scan NCS files
+            #=======================================================================
 
-            else:
-                #=======================================================================
-                # # Scan NCS files
-                #=======================================================================
+            self._diagnostic_print('\nDetected %i .ncs file(s).'%(len(self.ncs_avail)))
 
-                self._diagnostic_print('\nDetected %i .ncs file(s).'%(len(self.ncs_avail)))
+            for ncs_file in self.ncs_avail:
+                # Loading individual NCS file and extracting parameters
+                self._diagnostic_print("Scanning " + ncs_file + ".")
 
-                for ncs_file in self.ncs_avail:
-                    # Loading individual NCS file and extracting parameters
-                    self._diagnostic_print("Scanning " + ncs_file + ".")
+                # Reading file packet headers
+                filehandle = self.__mmap_ncs_packet_headers(ncs_file)
+                if filehandle == None:
+                    continue
 
-                    # Reading file packet headers
-                    filehandle = self.__mmap_ncs_packet_headers(ncs_file)
-                    if filehandle == None:
-                        continue
+                try:
+                    # Checking consistency of ncs file
+                    self.__ncs_packet_check(filehandle)
+                except AssertionError:
+                    warnings.warn('Session file %s did not pass data packet check. '
+                                  'This file can not be loaded.'%ncs_file)
+                    continue
 
-                    try:
-                        # Checking consistency of ncs file
-                        self.__ncs_packet_check(filehandle)
-                    except AssertionError:
-                        warnings.warn('Session file %s did not pass data packet check. '
-                                      'This file can not be loaded.'%ncs_file)
-                        continue
+                # Reading data packet header information and store them in parameters_ncs
+                self.__read_ncs_data_headers(filehandle, ncs_file)
 
-                    # Reading data packet header information and store them in parameters_ncs
-                    self.__read_ncs_data_headers(filehandle, ncs_file)
+                # Reading txt file header
+                channel_id = self.get_channel_id_by_file_name(ncs_file)
+                self.__read_ncs_text_header(ncs_file,channel_id)
 
-                    # Reading txt file header
-                    channel_id = self.get_channel_id_by_file_name(ncs_file)
-                    self.__read_ncs_text_header(ncs_file,channel_id)
+                # Check for invalid starting times of data packets in ncs file
+                self.__ncs_invalid_first_sample_check(filehandle)
 
-                    # Check for invalid starting times of data packets in ncs file
-                    self.__ncs_invalid_first_sample_check(filehandle)
-
-                    # Check ncs file for gaps
-                    self.__ncs_gap_check(filehandle)
+                # Check ncs file for gaps
+                self.__ncs_gap_check(filehandle)
 
 
-                #=======================================================================
-                # # Scan NSE files
-                #=======================================================================
+            #=======================================================================
+            # # Scan NSE files
+            #=======================================================================
 
+            # Loading individual NSE file and extracting parameters
+            self._diagnostic_print('\nDetected %i .nse file(s).'%(len(self.nse_avail)))
+
+            for nse_file in self.nse_avail:
                 # Loading individual NSE file and extracting parameters
-                self._diagnostic_print('\nDetected %i .nse file(s).'%(len(self.nse_avail)))
+                self._diagnostic_print('Scanning ' + nse_file + '.')
 
-                for nse_file in self.nse_avail:
-                    # Loading individual NSE file and extracting parameters
-                    self._diagnostic_print('Scanning ' + nse_file + '.')
-
-                    # Reading file
-                    filehandle = self.__mmap_nse_packets(nse_file)
-                    if filehandle == None:
-                        continue
+                # Reading file
+                filehandle = self.__mmap_nse_packets(nse_file)
+                if filehandle == None:
+                    continue
 
 
-                    try:
-                        # Checking consistency of nse file
-                        self.__nse_check(filehandle)
-                    except AssertionError:
-                        warnings.warn('Session file %s did not pass data packet check. '
-                                      'This file can not be loaded.'%nse_file)
-                        continue
+                try:
+                    # Checking consistency of nse file
+                    self.__nse_check(filehandle)
+                except AssertionError:
+                    warnings.warn('Session file %s did not pass data packet check. '
+                                  'This file can not be loaded.'%nse_file)
+                    continue
 
-                    # Reading header information and store them in parameters_nse
-                    self.__read_nse_data_header(filehandle, nse_file)
+                # Reading header information and store them in parameters_nse
+                self.__read_nse_data_header(filehandle, nse_file)
 
-                    # Reading txt file header
-                    channel_id = self.get_channel_id_by_file_name(nse_file)
-                    self.__read_nse_text_header(nse_file,channel_id)
+                # Reading txt file header
+                channel_id = self.get_channel_id_by_file_name(nse_file)
+                self.__read_nse_text_header(nse_file,channel_id)
 
 
-                #=======================================================================
-                # # Scan NEV files
-                #=======================================================================
+            #=======================================================================
+            # # Scan NEV files
+            #=======================================================================
 
-                self._diagnostic_print('\nDetected %i .nev file(s).'%(len(self.nev_avail)))
+            self._diagnostic_print('\nDetected %i .nev file(s).'%(len(self.nev_avail)))
 
-                for nev_file in self.nev_avail:
-                    # Loading individual NEV file and extracting parameters
-                    self._diagnostic_print('Scanning ' + nev_file + '.')
+            for nev_file in self.nev_avail:
+                # Loading individual NEV file and extracting parameters
+                self._diagnostic_print('Scanning ' + nev_file + '.')
 
-                    # Reading file
-                    filehandle = self.__mmap_nev_file(nev_file)
+                # Reading file
+                filehandle = self.__mmap_nev_file(nev_file)
 
-                    try:
-                        # Checking consistency of nev file
-                        self.__nev_check(filehandle)
-                    except AssertionError:
-                        warnings.warn('Session file %s did not pass data packet check. '
-                                      'This file can not be loaded.'%nev_file)
-                        continue
+                try:
+                    # Checking consistency of nev file
+                    self.__nev_check(filehandle)
+                except AssertionError:
+                    warnings.warn('Session file %s did not pass data packet check. '
+                                  'This file can not be loaded.'%nev_file)
+                    continue
 
-                    # Reading header information and store them in parameters_nev
-                    self.__read_nev_data_header(filehandle, nev_file)
+                # Reading header information and store them in parameters_nev
+                self.__read_nev_data_header(filehandle, nev_file)
 
-                    # Reading txt file header
-                    self.__read_nev_text_header(nev_file)
+                # Reading txt file header
+                self.__read_nev_text_header(nev_file)
 
 
 
-                #=======================================================================
-                # # Scan NTT files
-                #=======================================================================
+            #=======================================================================
+            # # Scan NTT files
+            #=======================================================================
 
-                self._diagnostic_print('\nDetected %i .ntt file(s).'%(len(self.ntt_avail)))
+            self._diagnostic_print('\nDetected %i .ntt file(s).'%(len(self.ntt_avail)))
 
-                for ntt_file in self.ntt_avail:
-                    # Loading individual NTT file and extracting parameters
-                    self._diagnostic_print('Scanning ' + ntt_file + '.')
+            for ntt_file in self.ntt_avail:
+                # Loading individual NTT file and extracting parameters
+                self._diagnostic_print('Scanning ' + ntt_file + '.')
 
-                    # Reading file
-                    filehandle = self.__mmap_ntt_file(ntt_file)
+                # Reading file
+                filehandle = self.__mmap_ntt_file(ntt_file)
 
-                    try:
-                        # Checking consistency of nev file
-                        self.__ntt_check(filehandle)
-                    except AssertionError:
-                        warnings.warn('Session file %s did not pass data packet check. '
-                                      'This file can not be loaded.'%ntt_file)
-                        continue
+                try:
+                    # Checking consistency of nev file
+                    self.__ntt_check(filehandle)
+                except AssertionError:
+                    warnings.warn('Session file %s did not pass data packet check. '
+                                  'This file can not be loaded.'%ntt_file)
+                    continue
 
-                    # Reading header information and store them in parameters_nev
-                    self.__read_ntt_data_header(filehandle, ntt_file)
+                # Reading header information and store them in parameters_nev
+                self.__read_ntt_data_header(filehandle, ntt_file)
 
-                    # Reading txt file header
-                    self.__read_ntt_text_header(ntt_file)
+                # Reading txt file header
+                self.__read_ntt_text_header(ntt_file)
 
             #=======================================================================
             # # Check consistency across files
@@ -883,6 +913,20 @@ class NeuralynxIO(BaseIO):
                     self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'])
 
 
+        # save results of association for future analysis
+        if cachedir != None:
+            pickle.dump( {'global': self.parameters_global,
+                          'ncs': self.parameters_ncs,
+                          'nev': self.parameters_nev,
+                          'nse': self.parameters_nse,
+                          'ntt': self.parameters_ntt},
+                         open( cachedir + '/' + self.sessiondir.split('/')[-1] + '/parameters.cache', 'wb' ) )
+            pickle.dump( hashes_calc, open(cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys', 'wb' ))
+
+            # with open(cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys', 'w' ) as file:
+            #     for name,hash in hashes_calc.iteritems():
+            #         file.write(name + '\t' + hash + '\n')
+
         self.associated = True
 
 
@@ -896,7 +940,6 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        # TODO: Check if 'CHANNEL' really never occurs in file (last entry of data packet
         filesize = getsize(self.sessiondir + '/' + filename) #in byte
         if filesize > 16384:
             data = np.memmap(self.sessiondir + '/' + filename,
@@ -1176,7 +1219,7 @@ class NeuralynxIO(BaseIO):
             -
         '''
 
-        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+        [timestamps, channel_ids, cell_numbers, features, data_points] = filehandle
 
         if filehandle != None:
 
@@ -1210,7 +1253,7 @@ class NeuralynxIO(BaseIO):
             -
         '''
 
-        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+        [timestamps, channel_ids, cell_numbers, features, data_points] = filehandle
 
         if filehandle != None:
 
@@ -1322,7 +1365,7 @@ class NeuralynxIO(BaseIO):
                 Handle to the already opened .nse file.
         '''
 
-        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+        [timestamps, channel_ids, cell_numbers, features, data_points] = filehandle
 
         assert all(channel_ids == channel_ids[0])
 
@@ -1358,7 +1401,7 @@ class NeuralynxIO(BaseIO):
                 Handle to the already opened .nse file.
         '''
         # TODO: check this when first .ntt files are available
-        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+        [timestamps, channel_ids, cell_numbers, features, data_points] = filehandle
 
         assert all(channel_ids == channel_ids[0])
 
@@ -1478,6 +1521,14 @@ class NeuralynxIO(BaseIO):
             'NCS and NSE %s'%(filename,channel_ids))
         else: # if filename was not detected
             return None
+
+
+    def hashfile(self,afile, hasher, blocksize=65536):
+        buf = afile.read(blocksize)
+        while len(buf) > 0:
+            hasher.update(buf)
+            buf = afile.read(blocksize)
+        return hasher.digest()
 
 
 
