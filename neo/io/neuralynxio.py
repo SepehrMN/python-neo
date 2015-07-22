@@ -116,15 +116,15 @@ class NeuralynxIO(BaseIO):
 
 
 
-    def __init__(self, sessiondir=None, cachedir = None, print_diagnostic=False, check_files=True):
+    def __init__(self, sessiondir=None, cachedir = None, print_diagnostic=False):
         """
         Arguments:
             sessiondir : the directory the files of the recording session are
                             collected. Default 'None'.
             print_diagnostic: indicates, whether information about the loading of
                             data is printed in terminal or not. Default 'False'.
-            check_files: check associated files on consistency. This is highly
-                            recommended to ensure correct operation. Default 'True'
+            cachedir: the directory where metadata about the recording session is
+                            read from and written to.
 
         """
 
@@ -149,7 +149,7 @@ class NeuralynxIO(BaseIO):
         self.sessiondir = sessiondir
         self._print_diagnostic = print_diagnostic
         self.associated = False
-        self._associate(check_files = check_files)
+        self._associate(cachedir=cachedir)
 
         self._diagnostic_print('Initialized IO for session %s'%self.sessiondir)
 
@@ -400,7 +400,7 @@ class NeuralynxIO(BaseIO):
 
 
         #read data
-        header_time_data = self.__mmap_ncs_paket_headers(filename_ncs)[0]
+        header_time_data = self.__mmap_ncs_packet_headers(filename_ncs)[0]
 
         data = self.__mmap_ncs_data(filename_ncs)
 
@@ -422,26 +422,26 @@ class NeuralynxIO(BaseIO):
 
             tstamps = (header_time_data - self.parameters_global['t_start']) * self.ncs_time_unit
 
-            #find data paket to start with signal construction
+            #find data packet to start with signal construction
             starts = np.where(tstamps<=t_start)[0]
             if len(starts) == 0:
                 self._diagnostic_print('Requested AnalogSignalArray not present in this time interval.')
                 return
             else:
-                #first paket to be included into signal
+                #first packet to be included into signal
                 p_id_start = starts[-1]
-            #find data paket where signal ends (due to gap or t_stop)
+            #find data packet where signal ends (due to gap or t_stop)
             stops = np.where(tstamps>=t_stop)[0]
             if len(stops) !=0:
                 first_stop = [stops[0]]
             else: first_stop = []
 
-            # last paket to be included in signal
+            # last packet to be included in signal
             p_id_stop = min(first_stop + \
                             [gap_id[0] for gap_id in self.parameters_ncs[chid]['gaps'] if gap_id[0]>p_id_start] + \
                             [len(data)])
 
-            # construct signal in valid paket range
+            # construct signal in valid packet range
             sig = np.array(data[p_id_start:p_id_stop+1],dtype=float)
             sig = sig.reshape(len(sig)*len(sig[0]))
 
@@ -463,7 +463,7 @@ class NeuralynxIO(BaseIO):
                                                     name = 'channel_%i'%(chid),
                                                     channel_index = chid)
 
-        # removing protruding parts of first and last data paket
+        # removing protruding parts of first and last data packet
         if anasig.t_start < t_start.rescale(anasig.t_start.units):
             anasig = anasig.time_slice(t_start.rescale(anasig.t_start.units),None)
 
@@ -567,7 +567,7 @@ class NeuralynxIO(BaseIO):
             # in self.nse_avail
             if filename_nse  in self.nse_avail:
                 warnings.warn('NeuralynxIO is attempting to read an empty '
-                            '(not associated) nse file (%s).'
+                            '(not associated) nse file (%s). '
                             'Not loading nse file.'%(filename_nse))
                 return
             else:
@@ -593,7 +593,8 @@ class NeuralynxIO(BaseIO):
 
 
         # reading data
-        data = self.__mmap_nse_file(filename_nse)
+        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = self.__mmap_nse_packets(filename_nse)
+
 
         # collecting spike times for each individual unit (assuming unit numbers
         # start at 0 and go to #(number of units)
@@ -601,7 +602,7 @@ class NeuralynxIO(BaseIO):
 
             if not lazy:
                 # Extract all time stamps of that neuron on that electrode
-                spike_times = np.array([time[0] for time in data
+                spike_times = np.array([time[0] for time in timestamps
                                         if time[1][4][1]==unit_i])
                 spikes = pq.Quantity((spike_times - self.parameters_global['t_start']),
                                         units=self.nse_time_unit)
@@ -622,7 +623,7 @@ class NeuralynxIO(BaseIO):
             if waveforms and not lazy:
                 # Collect all waveforms of the specific unit
                 # For computational reasons: no units, no time axis
-                st.waveforms = np.array([time[4][0] for time in data if time[1][4][1]==unit_i])
+                st.waveforms = np.array([data_points[t,:] for t in range(len(timestamps)) if unit_ids[t]==unit_i])
 
             # annotation of spiketrains?
             seg.spiketrains.append(st)
@@ -632,15 +633,13 @@ class NeuralynxIO(BaseIO):
 
 
 
-    def _associate(self, check_files=True):
+    def _associate(self, cachedir = None):
         """
         Associates the object with a specified Neuralynx session, i.e., a
         combination of a .nse, .nev and .ncs files. The meta data is read into the
         object for future reference.
 
         Arguments:
-            check_files: check associated files on consistency. This is highly
-                            recommended to ensure correct operation.
         Returns:
             -
         """
@@ -653,9 +652,10 @@ class NeuralynxIO(BaseIO):
         # Create parameter containers
         # Dictionary that holds different parameters read from the .nev file
         self.parameters_nse = {}
-        # List of parameter dictionaries for all potential .nsX files 0..9
+        # List of parameter dictionaries for all potential file types
         self.parameters_ncs = {}
         self.parameters_nev = {}
+        self.parameters_ntt = {}
 
         # combined global parameters
         self.parameters_global = {}
@@ -663,182 +663,224 @@ class NeuralynxIO(BaseIO):
         # Scanning session directory for recorded files
         self.sessionfiles = [ f for f in listdir(self.sessiondir) if isfile(join(self.sessiondir,f)) ]
 
-        #=======================================================================
-        # # Scan NCS files
-        #=======================================================================
 
         self.ncs_avail = []
         self.nse_avail = []
         self.nev_avail = []
+        self.ntt_avail = []
 
         for filename in self.sessionfiles:
             # Extracting only continuous signal files (.ncs)
             if filename[-4:] == '.ncs':
                 self.ncs_avail.append(filename)
-
-        self._diagnostic_print('\nDetected %i .ncs file(s).'%(len(self.ncs_avail)))
-
-
-
-        for ncs_file in self.ncs_avail:
-            # Loading individual NCS file and extracting parameters
-            self._diagnostic_print("Scanning " + ncs_file + ".")
-
-
-            # Reading file paket headers
-            filehandle = self.__mmap_ncs_paket_headers(ncs_file)
-            if filehandle == None:
-                continue
-
-            try:
-                if check_files:
-                    # Checking consistency of ncs file
-                    self.__ncs_paket_check(filehandle)
-            except AssertionError:
-                warnings.warn('Session file %s did not pass data packet check. This file can not be loaded.'%ncs_file)
-                continue
-
-            # Reading data paket header information and store them in parameters_ncs
-            self.__read_ncs_data_headers(filehandle, ncs_file)
-
-            # Reading txt file header
-            channel_id = self.get_channel_id_by_file_name(ncs_file)
-            self.__read_ncs_text_header(ncs_file,channel_id)
-
-            # Check for invalid starting times of data pakets in ncs file
-            self.__ncs_invalid_first_sample_check(filehandle)
-
-            # Check ncs file for gaps
-            self.__ncs_gap_check(filehandle)
-
-
-        #=======================================================================
-        # # Scan NSE files
-        #=======================================================================
-
-        for filename in self.sessionfiles:
-            # Extracting only single electrode spikes recording files (.nev)
-            if filename[-4:] == '.nse':
+            elif filename[-4:] == '.nse':
                 self.nse_avail.append(filename)
-
-        # Loading individual NSE file and extracting parameters
-        self._diagnostic_print('\nDetected %i .nse file(s).'%(len(self.nse_avail)))
-
-        for nse_file in self.nse_avail:
-            # Loading individual NSE file and extracting parameters
-            self._diagnostic_print('Scanning ' + nse_file + '.')
-
-            # Reading file
-            filehandle = self.__mmap_nse_file(nse_file)
-
-            if check_files:
-                # Checking consistency of nse file
-                self.__nse_check(filehandle)
-
-            # Reading header information and store them in parameters_nse
-            self.__read_nse_data_header(filehandle, nse_file)
-
-            # Reading txt file header
-            channel_id = self.get_channel_id_by_file_name(nse_file)
-            self.__read_nse_text_header(nse_file,channel_id)
-
-        #=======================================================================
-        # # Scan NEV files
-        #=======================================================================
-
-
-        for filename in self.sessionfiles:
-            # Extracting only single electrode spikes recording files (.nev)
-            if filename[-4:] == '.nev':
+            elif filename[-4:] == '.nev':
                 self.nev_avail.append(filename)
-
-        self._diagnostic_print('\nDetected %i .nev file(s).'%(len(self.nev_avail)))
-
-        for nev_file in self.nev_avail:
-            # Loading individual NEV file and extracting parameters
-            self._diagnostic_print('Scanning ' + nev_file + '.')
-
-            # Reading file
-            filehandle = self.__mmap_nev_file(nev_file)
-
-            if check_files:
-                # Checking consistency of nev file
-                self.__nev_check(filehandle)
-
-            # Reading header information and store them in parameters_nev
-            self.__read_nev_data_header(filehandle, nev_file)
-
-            # Reading txt file header
-            self.__read_nev_text_header(nev_file)
-
-        #=======================================================================
-        # # Check consistency across files
-        #=======================================================================
-
-        # check starting times of .ncs files
-        if len(np.unique([i['t_start'] for i in self.parameters_ncs.values()])) != 1:
-            raise ValueError('NCS files do not start at same time point.')
-
-
-        # check recoding_opened times (from txt header) for different files
-        # This is performed file type wise as there can be opening differences of up to 15 seconds...
-        # TODO: find out why this is the case (see above)
-        nev_parameters = {None: self.parameters_nev} if self.parameters_nev else {}
-        for parameter_collection in [self.parameters_ncs, self.parameters_nse, nev_parameters]:
-            if any(np.abs(np.diff([i['recording_opened'] for i in parameter_collection.values()]))>datetime.timedelta(seconds=0.1)):
-                raise ValueError('NCS files were opened for recording with a delay greater than 0.1 second.')
-
-            # check recoding_opened times (from txt header) for different ncs files
-            if any(np.diff([i['recording_closed'] for i in parameter_collection.values() if i['recording_closed'] != None])>datetime.timedelta(seconds=0.1)):
-                raise ValueError('NCS files were closed after recording with a delay greater than 0.1 second.')
-
-        nev_parameters = [self.parameters_nev] if self.parameters_nev else []
-        parameter_collection = self.parameters_ncs.values() + self.parameters_nse.values() + nev_parameters
-        self.parameters_global['recording_opened'] = min([i['recording_opened']for i in parameter_collection])
-        self.parameters_global['recording_closed'] = max([i['recording_closed']for i in parameter_collection])
-
-
-        self.parameters_global['t_start'] = 0
-        self.parameters_global['event_offset'] = 0
-        # check if also nev file starts at same time point
-        if self.nev_avail!=[] and self.parameters_ncs.values()[0]['t_start'] != self.parameters_nev['Starting_Recording'][0]:
-            warnings.warn('NCS and event of recording start are not the same!')
-
-        # check if nse time is available and extract first time point as t_first
-        if self.nse_avail != [] and \
-                       self.parameters_nse.values()[0]['t_first'] != None:
-           t_first = self.parameters_nse.values()[0]['t_first']
-        else: t_first = np.inf #using inf, because None is handles as if neg. number
-
-        #setting global time frame
-        if self.nev_avail!=[]:
-            self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
-                                                self.parameters_nev['t_start'],
-                                                t_first)
-            self.parameters_global['event_offset'] = self.parameters_nev['t_start'] \
-                                                        - self.parameters_ncs.values()[0]['t_start']
-        else:
-            self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'], t_first)
-            self.parameters_global['event_offset'] = self.parameters_ncs.values()[0]['t_start']
-
-        # Offset time of .nse file can not be determined for sure as there is no
-        # time stamp of recording start in this file -> check by by comparison to .ncs
-        self.parameters_global['spike_offset'] = None
-
-
-
-        # checking gap consistency
-        # across ncs files
-        #check number of gaps detected
-        if len(np.unique([len(i['gaps']) for i in self.parameters_ncs.values()])) != 1:
-            raise ValueError('NCS files contain different numbers of gaps!')
-        # check consistency of gaps across files and create global gap collection
-        self.parameters_global['gaps'] = []
-        for g in range(len(self.parameters_ncs.values()[0]['gaps'])):
-            if len(np.unique([i['gaps'][g] for i in self.parameters_ncs.values()])) != 1:
-                raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
+            elif filename[-4:] == '.ntt':
+                self.ntt_avail.append(filename)
             else:
-                self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'])
+                self._diagnostic_print('Ignoring file of unknown data type %s'%filename)
+
+            if cachedir!=None:
+                pass
+
+            else:
+                #=======================================================================
+                # # Scan NCS files
+                #=======================================================================
+
+                self._diagnostic_print('\nDetected %i .ncs file(s).'%(len(self.ncs_avail)))
+
+                for ncs_file in self.ncs_avail:
+                    # Loading individual NCS file and extracting parameters
+                    self._diagnostic_print("Scanning " + ncs_file + ".")
+
+                    # Reading file packet headers
+                    filehandle = self.__mmap_ncs_packet_headers(ncs_file)
+                    if filehandle == None:
+                        continue
+
+                    try:
+                        # Checking consistency of ncs file
+                        self.__ncs_packet_check(filehandle)
+                    except AssertionError:
+                        warnings.warn('Session file %s did not pass data packet check. '
+                                      'This file can not be loaded.'%ncs_file)
+                        continue
+
+                    # Reading data packet header information and store them in parameters_ncs
+                    self.__read_ncs_data_headers(filehandle, ncs_file)
+
+                    # Reading txt file header
+                    channel_id = self.get_channel_id_by_file_name(ncs_file)
+                    self.__read_ncs_text_header(ncs_file,channel_id)
+
+                    # Check for invalid starting times of data packets in ncs file
+                    self.__ncs_invalid_first_sample_check(filehandle)
+
+                    # Check ncs file for gaps
+                    self.__ncs_gap_check(filehandle)
+
+
+                #=======================================================================
+                # # Scan NSE files
+                #=======================================================================
+
+                # Loading individual NSE file and extracting parameters
+                self._diagnostic_print('\nDetected %i .nse file(s).'%(len(self.nse_avail)))
+
+                for nse_file in self.nse_avail:
+                    # Loading individual NSE file and extracting parameters
+                    self._diagnostic_print('Scanning ' + nse_file + '.')
+
+                    # Reading file
+                    filehandle = self.__mmap_nse_packets(nse_file)
+                    if filehandle == None:
+                        continue
+
+
+                    try:
+                        # Checking consistency of nse file
+                        self.__nse_check(filehandle)
+                    except AssertionError:
+                        warnings.warn('Session file %s did not pass data packet check. '
+                                      'This file can not be loaded.'%nse_file)
+                        continue
+
+                    # Reading header information and store them in parameters_nse
+                    self.__read_nse_data_header(filehandle, nse_file)
+
+                    # Reading txt file header
+                    channel_id = self.get_channel_id_by_file_name(nse_file)
+                    self.__read_nse_text_header(nse_file,channel_id)
+
+
+                #=======================================================================
+                # # Scan NEV files
+                #=======================================================================
+
+                self._diagnostic_print('\nDetected %i .nev file(s).'%(len(self.nev_avail)))
+
+                for nev_file in self.nev_avail:
+                    # Loading individual NEV file and extracting parameters
+                    self._diagnostic_print('Scanning ' + nev_file + '.')
+
+                    # Reading file
+                    filehandle = self.__mmap_nev_file(nev_file)
+
+                    try:
+                        # Checking consistency of nev file
+                        self.__nev_check(filehandle)
+                    except AssertionError:
+                        warnings.warn('Session file %s did not pass data packet check. '
+                                      'This file can not be loaded.'%nev_file)
+                        continue
+
+                    # Reading header information and store them in parameters_nev
+                    self.__read_nev_data_header(filehandle, nev_file)
+
+                    # Reading txt file header
+                    self.__read_nev_text_header(nev_file)
+
+
+
+                #=======================================================================
+                # # Scan NTT files
+                #=======================================================================
+
+                self._diagnostic_print('\nDetected %i .ntt file(s).'%(len(self.ntt_avail)))
+
+                for ntt_file in self.ntt_avail:
+                    # Loading individual NTT file and extracting parameters
+                    self._diagnostic_print('Scanning ' + ntt_file + '.')
+
+                    # Reading file
+                    filehandle = self.__mmap_ntt_file(ntt_file)
+
+                    try:
+                        # Checking consistency of nev file
+                        self.__ntt_check(filehandle)
+                    except AssertionError:
+                        warnings.warn('Session file %s did not pass data packet check. '
+                                      'This file can not be loaded.'%ntt_file)
+                        continue
+
+                    # Reading header information and store them in parameters_nev
+                    self.__read_ntt_data_header(filehandle, ntt_file)
+
+                    # Reading txt file header
+                    self.__read_ntt_text_header(ntt_file)
+
+            #=======================================================================
+            # # Check consistency across files
+            #=======================================================================
+
+            # TODO: Implement also ntt files in this part
+            # check starting times of .ncs files
+            if len(np.unique([i['t_start'] for i in self.parameters_ncs.values()])) > 1:
+                raise ValueError('NCS files do not start at same time point.')
+
+
+            # check recoding_opened times (from txt header) for different files
+            # This is performed file type wise as there can be opening differences of up to 15 seconds...
+            # TODO: find out why this is the case (see above)
+            nev_parameters = {None: self.parameters_nev} if self.parameters_nev else {}
+            for parameter_collection in [self.parameters_ncs, self.parameters_nse, nev_parameters]:
+                if any(np.abs(np.diff([i['recording_opened'] for i in parameter_collection.values()]))>datetime.timedelta(seconds=0.1)):
+                    raise ValueError('NCS files were opened for recording with a delay greater than 0.1 second.')
+
+                # check recoding_opened times (from txt header) for different ncs files
+                if any(np.diff([i['recording_closed'] for i in parameter_collection.values() if i['recording_closed'] != None])>datetime.timedelta(seconds=0.1)):
+                    raise ValueError('NCS files were closed after recording with a delay greater than 0.1 second.')
+
+            nev_parameters = [self.parameters_nev] if self.parameters_nev else []
+            parameter_collection = self.parameters_ncs.values() + self.parameters_nse.values() + nev_parameters
+            self.parameters_global['recording_opened'] = min([i['recording_opened']for i in parameter_collection])
+            self.parameters_global['recording_closed'] = max([i['recording_closed']for i in parameter_collection])
+
+
+            self.parameters_global['t_start'] = 0
+            self.parameters_global['event_offset'] = 0
+            # check if also nev file starts at same time point
+            if self.nev_avail!=[] and self.ncs_avail != {} and self.parameters_ncs.values()[0]['t_start'] != self.parameters_nev['Starting_Recording'][0]:
+                warnings.warn('NCS and event of recording start are not the same!')
+
+            # check if nse time is available and extract first time point as t_first
+            if self.nse_avail != [] and \
+                           self.parameters_nse.values()[0]['t_first'] != None:
+               t_first = self.parameters_nse.values()[0]['t_first']
+            else: t_first = np.inf #using inf, because None is handles as if neg. number
+
+            #setting global time frame
+            if self.nev_avail!=[]:
+                self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
+                                                    self.parameters_nev['t_start'],
+                                                    t_first)
+                self.parameters_global['event_offset'] = self.parameters_nev['t_start'] \
+                                                            - self.parameters_ncs.values()[0]['t_start']
+            else:
+                self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'], t_first)
+                self.parameters_global['event_offset'] = self.parameters_ncs.values()[0]['t_start']
+
+            # Offset time of .nse file can not be determined for sure as there is no
+            # time stamp of recording start in this file -> check by by comparison to .ncs
+            self.parameters_global['spike_offset'] = None
+
+
+
+            # checking gap consistency
+            # across ncs files
+            #check number of gaps detected
+            if len(np.unique([len(i['gaps']) for i in self.parameters_ncs.values()])) != 1:
+                raise ValueError('NCS files contain different numbers of gaps!')
+            # check consistency of gaps across files and create global gap collection
+            self.parameters_global['gaps'] = []
+            for g in range(len(self.parameters_ncs.values()[0]['gaps'])):
+                if len(np.unique([i['gaps'][g] for i in self.parameters_ncs.values()])) != 1:
+                    raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
+                else:
+                    self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'])
 
 
         self.associated = True
@@ -849,61 +891,84 @@ class NeuralynxIO(BaseIO):
 
 ################# Memory Mapping Methods
 
-    def __mmap_nse_file(self, filename):
-        """ Memory map the Neuralynx .nse file """
-        nse_dtype = np.dtype([
-            ('timestamp', '<u8'),
-            ('sc_number', '<u4'),
-            ('cell_number', '<u4'),
-            ('params', '<u4',   (8,)),
-            ('data', '<i2', (32, 1)),
-        ])
-        if getsize(self.sessiondir + '/' + filename) > 16384:
-            return np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
-        else:
-            return None
+    # def __mmap_nse_file(self, filename):
+    #     """ Memory map the Neuralynx .nse file """
+    #     nse_dtype = np.dtype([
+    #         ('timestamp', '<u8'),
+    #         ('sc_number', '<u4'),
+    #         ('cell_number', '<u4'),
+    #         ('params', '<u4',   (8,)),
+    #         ('data', '<i2', (32, 1)),
+    #     ])
+    #     if getsize(self.sessiondir + '/' + filename) > 16384:
+    #         return np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
+    #     else:
+    #         return None
 
-    def __mmap_nse_time_stamps(self, filename):
-        """ Memory map the Neuralynx .nse file """
-        nse_dtype = np.dtype([
-            ('timestamp', '<u8'),
-            ('rest', 'V102'),
-            ('channel','<i2')])
-        if getsize(self.sessiondir + '/' + filename) > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
-            return copy.deepcopy(np.array([[i[0],i[2]] for i in data]))
-        else:
-            return None
+
+    def __mmap_nse_packets(self,filename):
+        """
+        Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
+        Reading standard dtype improves speed, but timestamps need to be reconstructed
+        """
+        # TODO: Check if 'CHANNEL' really never occurs in file (last entry of data packet
+        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        if filesize > 16384:
+            data = np.memmap(self.sessiondir + '/' + filename,
+                            dtype='<u2', shape = ((filesize-16384)/2/56,56),
+                            mode='r', offset=16384)
+
+            # reconstructing original data
+            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2*32 + data[:,3]*2*48 # first 4 ints -> timestamp in microsec
+            channel_id = data[:,4] + data[:,5]*2**16
+            cell_number = data[:,6] + data[:,7]*2**16
+            features = [data[:,p] + data[:,p+1]*2**16 for p in range(8,23,2)] #this is inconsistent with the Neuraview output as this can be negative
+            features = np.array(features,dtype='i4')
+
+            data_points = data[:,24:56].astype('i2')
+            unit_ids = None #data[:,56]
+            del data
+            return timestamps, channel_id, cell_number, features, data_points, unit_ids
+        else: return None
+
+
+    # def __mmap_nse_time_stamps(self, filename):
+    #     """ Memory map the Neuralynx .nse file """
+    #     nse_dtype = np.dtype([
+    #         ('timestamp', '<u8'),
+    #         ('rest', 'V102'),
+    #         ('channel','<i2')])
+    #     if getsize(self.sessiondir + '/' + filename) > 16384:
+    #         data = np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
+    #         return copy.deepcopy(np.array([[i[0],i[2]] for i in data]))
+    #     else:
+    #         return None
 
 
     #different methods for reading different parts of ncs files in efficient ways
-    def __mmap_ncs_file(self, filename):
-        """ Memory map the Neuralynx .ncs file """
-        ncs_dtype = np.dtype([
-            ('timestamp', '<u8'),
-            ('channel_number', '<u4'),
-            ('sample_freq', '<u4'),
-            ('valid_samples', '<u4'),
-            ('samples', '<i2', (512)),
-        ])
-        return np.memmap(self.sessiondir + '/' + filename, dtype=ncs_dtype, mode='r', offset=16384)
+    # def __mmap_ncs_file(self, filename):
+    #     """ Memory map the Neuralynx .ncs file """
+    #     ncs_dtype = np.dtype([
+    #         ('timestamp', '<u8'),
+    #         ('channel_number', '<u4'),
+    #         ('sample_freq', '<u4'),
+    #         ('valid_samples', '<u4'),
+    #         ('samples', '<i2', (512)),
+    #     ])
+    #     return np.memmap(self.sessiondir + '/' + filename, dtype=ncs_dtype, mode='r', offset=16384)
+
 
     def __mmap_ncs_data(self,filename):
         """ Memory map of the Neuralynx .ncs file optimized for data extraction"""
         if getsize(self.sessiondir + '/' + filename) > 16384:
             data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype(('i2',(522))),mode='r', offset=16384)
-            #removing data paket headers and flattening data
+            #removing data packet headers and flattening data
             return data[:,10:]
         else: return None
 
-    # def __mmap_ncs_time_stamps(self,filename):
-    #     """ Memory map of the Neuralynx .ncs file optimized for extraction of time stamps of data pakets"""
-    #     data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype([('timestamp','<u8'),('rest','V%s'%(512*2+12))]),mode='r', offset=16384)
-    #     return copy.deepcopy(np.array([i[0] for i in data],dtype=np.dtype('u8')))
-
-    def __mmap_ncs_paket_headers(self,filename):
+    def __mmap_ncs_packet_headers(self,filename):
         """
-        Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers
+        Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
         filesize = getsize(self.sessiondir + '/' + filename) #in byte
@@ -918,18 +983,6 @@ class NeuralynxIO(BaseIO):
             return timestamps, header_u4
         else: return None
 
-    # def __mmap_ncs_paket_headers(self,filename):
-    #     """ Memory map of the Neuralynx .ncs file optimized for extraction of data paket headers"""
-    #     if getsize(self.sessiondir + '/' + filename) > 16384:
-    #         data = np.memmap(self.sessiondir + '/' + filename,
-    #                                 dtype=np.dtype([('timestamp','<u8'),
-    #                                                 ('channel_number', '<u4'),
-    #                                                 ('sample_freq', '<u4'),
-    #                                                 ('valid_samples', '<u4'),
-    #                                                 ('rest','V%s'%(512*2))]),
-    #                                 mode='r', offset=16384)
-    #         return copy.deepcopy(np.array([np.array([i[0],i[1],i[2],i[3]]) for i in data]))
-    #     else: return None
 
     def __mmap_nev_file(self, filename):
         """ Memory map the Neuralynx .nev file """
@@ -1022,6 +1075,16 @@ class NeuralynxIO(BaseIO):
         header_dict = self.__read_intro_txt_header(nse_text_header)
         self.parameters_nse[chid].update(header_dict)
 
+    def __read_ntt_text_header(self,filename_ntt,chid):
+        # Reading main file header (plain text, 16kB)
+        ntt_text_header = open(self.sessiondir + '/' + filename_ntt,'r').read(16384)
+        #separating lines of header and ignoring last line (fill)
+        ntt_text_header = ntt_text_header.split('\r\n')[:-1]
+
+        # extracting filename and recording opening/closing time
+        header_dict = self.__read_intro_txt_header(ntt_text_header)
+        self.parameters_ntt[chid].update(header_dict)
+
     def __read_nev_text_header(self,filename_nev):
         # Reading main file header (plain text, 16kB)
         nev_text_header = open(self.sessiondir + '/' + filename_nev,'r').read(16384)
@@ -1102,7 +1165,7 @@ class NeuralynxIO(BaseIO):
         t_start = timestamps[0] # in microseconds
         #calculating corresponding time stamp of first sample, that was not
         #recorded any more
-        #       time of first sample in last paket + (number of sample per paket * conversion factor (time are recorded in ms) / sampling rate
+        #       time of first sample in last packet + (number of sample per packet * conversion factor (time are recorded in ms) / sampling rate
         t_stop = timestamps[-1] + ((header_u4[-1][2]) * (1/self.ncs_time_unit.rescale(pq.s)).magnitude / header_u4[-1][1])
 
         if channel_id in self.parameters_ncs:
@@ -1131,27 +1194,59 @@ class NeuralynxIO(BaseIO):
             -
         '''
 
-        # TODO: Extend extracted information also to file header info (e.g. software version, settings...)
+        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
 
         if filehandle != None:
 
-            t_first = filehandle[0][0] # in microseconds
-            channel_id = filehandle[0][1]
-            cell_count = filehandle[0][2] #number of cells identified
-            spike_parameters = filehandle[0][3]
-        else:
-            t_first = None
-            channel_id = None
-            cell_count = 0
-            spike_parameters =  None
+            t_first = timestamps[0] # in microseconds
+            channel_id = channel_ids[0]
+            cell_count = cell_numbers[0] #number of cells identified
+            # spike_parameters = filehandle[0][3]
+        # else:
+        #     t_first = None
+        #     channel_id = None
+        #     cell_count = 0
+        #     # spike_parameters =  None
+        #
+        #     self._diagnostic_print('Empty file: No information contained in %s'%filename)
 
-            self._diagnostic_print('Empty file: No information contained in %s'%filename)
+            self.parameters_nse[channel_id] = { 'filename':filename,
+                                                't_first': t_first,
+                                                'cell_count': cell_count}
 
-        self.parameters_nse[channel_id] = { 'filename':filename,
-                                            't_first': t_first,
-                                            'cell_count': cell_count,
-                                            'spike_parameters': spike_parameters}
+    def __read_ntt_data_header(self, filehandle, filename):
+        '''
+        Reads the .nse data block headers and stores the information in the
+        object's parameters_ncs dictionary.
 
+        Args:
+            filehandle (file object):
+                Handle to the already opened .nse file.
+            filename (string):
+                Name of the nse file.
+        Returns:
+            -
+        '''
+
+        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+
+        if filehandle != None:
+
+            t_first = timestamps[0] # in microseconds
+            channel_id = channel_ids[0]
+            cell_count = cell_numbers[0] #number of cells identified
+            # spike_parameters = filehandle[0][3]
+        # else:
+        #     t_first = None
+        #     channel_id = None
+        #     cell_count = 0
+        #     # spike_parameters =  None
+        #
+        #     self._diagnostic_print('Empty file: No information contained in %s'%filename)
+
+            self.parameters_ntt[channel_id] = { 'filename':filename,
+                                                't_first': t_first,
+                                                'cell_count': cell_count}
 
     def __read_nev_data_header(self, filehandle, filename):
         '''
@@ -1196,7 +1291,7 @@ class NeuralynxIO(BaseIO):
 
     #________________ File Checks __________________________________
 
-    def __ncs_paket_check(self,filehandle):
+    def __ncs_packet_check(self,filehandle):
         '''
         Checks consistency of data in ncs file and raises assertion error if a
         check fails. Detected recording gaps are added to parameter_ncs
@@ -1211,27 +1306,27 @@ class NeuralynxIO(BaseIO):
         header_u4 = filehandle[1]
 
 
-        # checking sampling rate of data pakets
+        # checking sampling rate of data packets
         sr0 = header_u4[0,1]
         assert all(header_u4[:,1] == sr0)
 
-        # checking channel id of data pakets
+        # checking channel id of data packets
         channel_id = header_u4[0,0]
         assert all(header_u4[:,0] == channel_id)
 
-        #time offset of data pakets
+        #time offset of data packets
         # this is a not safe assumption, that the first two data packets have correct time stamps
         delta_t = timestamps[1] - timestamps[0]
 
-        # valid samples of first data paket
+        # valid samples of first data packet
         temp_valid_samples = header_u4[0,2]
 
         # unit test
-        # time difference between pakets corresponds to number of recorded samples
+        # time difference between packets corresponds to number of recorded samples
         # 10**6 due to unit conversion microsec -> sec
         assert delta_t == (temp_valid_samples / (self.ncs_time_unit.rescale(pq.s).magnitude * sr0))
 
-        self._diagnostic_print('NCS paket check successful.')
+        self._diagnostic_print('NCS packet check successful.')
 
 
 
@@ -1245,11 +1340,15 @@ class NeuralynxIO(BaseIO):
                 Handle to the already opened .nse file.
         '''
 
-        #TODO: Implement this when non-empty .nse files available
+        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
 
-        pass
+        assert all(channel_ids == channel_ids[0])
 
-#        self._diagnostic_print('NSE file check successful.')
+        assert all(cell_numbers == cell_numbers[0])
+
+        assert all([len(dp)==len(data_points[0]) for dp in data_points])
+
+        self._diagnostic_print('NSE file check successful.')
 
 
     def __nev_check(self,filehandle):
@@ -1267,11 +1366,31 @@ class NeuralynxIO(BaseIO):
 #        self._diagnostic_print('NEV file check successful.')
 
 
+    def __ntt_check(self,filehandle):
+        '''
+        Checks consistency of data in ncs file and raises assertion error if a
+        check fails.
+
+        Args:
+            filehandle (file object):
+                Handle to the already opened .nse file.
+        '''
+        # TODO: check this when first .ntt files are available
+        [timestamps, channel_ids, cell_numbers, features, data_points, unit_ids] = filehandle
+
+        assert all(channel_ids == channel_ids[0])
+
+        assert all(cell_numbers == cell_numbers[0])
+
+        assert all([len(dp)==len(data_points[0]) for dp in data_points])
+
+        self._diagnostic_print('NTT file check successful.')
+
 
     def __ncs_gap_check(self,filehandle):
         '''
         Checks individual data blocks of ncs files for consistent starting times with respect to sample count.
-        This covers intended recording gaps as well as shortened data paket, which are incomplete
+        This covers intended recording gaps as well as shortened data packet, which are incomplete
         '''
 
         timestamps = filehandle[0]
@@ -1280,60 +1399,60 @@ class NeuralynxIO(BaseIO):
         if channel_id not in self.parameters_ncs:
             self.parameters_ncs[channel_id] = {}
 
-        #time stamps of data pakets
+        #time stamps of data packets
         delta_t = timestamps[1] - timestamps[0] #in microsec
-        data_paket_offsets = np.diff(timestamps) # in microsec
+        data_packet_offsets = np.diff(timestamps) # in microsec
 
-        # check if delta_t corresponds to number of valid samples present in data pakets
+        # check if delta_t corresponds to number of valid samples present in data packets
         # NOTE: This also detects recording gaps!
         valid_samples = header_u4[:-1,2]
         sampling_rate = header_u4[0,1]
-        paket_checks = (valid_samples / (self.ncs_time_unit.rescale(pq.s).magnitude * sampling_rate)) == data_paket_offsets
-        if not all(paket_checks):
-            if 'broken_pakets' not in self.parameters_ncs[channel_id]:
-                self.parameters_ncs[channel_id]['broken_pakets'] = []
-            broken_pakets = np.where(np.array(paket_checks)==False)[0]
-            for broken_paket in broken_pakets:
-                self.parameters_ncs[channel_id]['broken_pakets'].append((broken_paket,
-                                                                         valid_samples[broken_paket],
-                                                                         data_paket_offsets[broken_paket]))
-                self._diagnostic_print('Detected broken paket in NCS file at '
-                                        'paket id %i (sample number %i '
-                                        'time offset id %i)'  %(broken_paket,
-                                                         valid_samples[broken_paket],
-                                                         data_paket_offsets[broken_paket])) # in microsec
+        packet_checks = (valid_samples / (self.ncs_time_unit.rescale(pq.s).magnitude * sampling_rate)) == data_packet_offsets
+        if not all(packet_checks):
+            if 'broken_packets' not in self.parameters_ncs[channel_id]:
+                self.parameters_ncs[channel_id]['broken_packets'] = []
+            broken_packets = np.where(np.array(packet_checks)==False)[0]
+            for broken_packet in broken_packets:
+                self.parameters_ncs[channel_id]['broken_packets'].append((broken_packet,
+                                                                         valid_samples[broken_packet],
+                                                                         data_packet_offsets[broken_packet]))
+                self._diagnostic_print('Detected broken packet in NCS file at '
+                                        'packet id %i (sample number %i '
+                                        'time offset id %i)'  %(broken_packet,
+                                                         valid_samples[broken_packet],
+                                                         data_packet_offsets[broken_packet])) # in microsec
 
 
-        #checking for irregular data paket durations -> gaps / shortened data pakets
-        if not all(data_paket_offsets == delta_t):
+        #checking for irregular data packet durations -> gaps / shortened data packets
+        if not all(data_packet_offsets == delta_t):
             if 'gaps' not in self.parameters_ncs[channel_id]:
                 self.parameters_ncs[channel_id]['gaps'] = []
             # gap identification by (sample of gap start, duration)
-            # gap pakets
-            gap_paket_ids = np.where(data_paket_offsets != delta_t)[0]
-            for gap_paket_id in gap_paket_ids:
+            # gap packets
+            gap_packet_ids = np.where(data_packet_offsets != delta_t)[0]
+            for gap_packet_id in gap_packet_ids:
 
-                #skip if this paket starting time is known to be corrupted
+                #skip if this packet starting time is known to be corrupted
                 # hoping no corruption and gap occurrs simultaneously #TODO: Check this
                 # corrupted time stamp affects two delta_t comparisons:
-                if gap_paket_id in self.parameters_ncs[channel_id]['invalid_first_samples'] \
-                    or gap_paket_id + 1 in self.parameters_ncs[channel_id]['invalid_first_samples']:
+                if gap_packet_id in self.parameters_ncs[channel_id]['invalid_first_samples'] \
+                    or gap_packet_id + 1 in self.parameters_ncs[channel_id]['invalid_first_samples']:
                     continue
 
-                gap_start = timestamps[gap_paket_id] # t_start of last paket [microsec]
-                gap_stop = timestamps[gap_paket_id+1] # t_stop of first paket [microsec]
+                gap_start = timestamps[gap_packet_id] # t_start of last packet [microsec]
+                gap_stop = timestamps[gap_packet_id+1] # t_stop of first packet [microsec]
 
-                self.parameters_ncs[channel_id]['gaps'].append((gap_paket_id,gap_start,gap_stop)) #[,microsec,microsec]
+                self.parameters_ncs[channel_id]['gaps'].append((gap_packet_id,gap_start,gap_stop)) #[,microsec,microsec]
                 self._diagnostic_print('Detected gap in NCS file between'
                                         'sample time %i and %i  (last correct '
-                                        'paket id %i)'  %(gap_start,gap_stop,
-                                                            gap_paket_id))
+                                        'packet id %i)'  %(gap_start,gap_stop,
+                                                            gap_packet_id))
 
 
     def __ncs_invalid_first_sample_check(self,filehandle):
         '''
         Checks data blocks of ncs files for corrupted starting times indicating
-        a missing first sample in the data paket. These are then excluded from
+        a missing first sample in the data packet. These are then excluded from
         the gap check, but ignored for further analysis.
         '''
         timestamps = filehandle[0]
@@ -1342,22 +1461,22 @@ class NeuralynxIO(BaseIO):
         self.parameters_ncs[channel_id]['invalid_first_samples'] = []
 
         #checking if first bit of timestamp is 1, which indicates error
-        invalid_paket_ids = np.where(timestamps >= 2**55)[0]
-        if len(invalid_paket_ids)>0:
+        invalid_packet_ids = np.where(timestamps >= 2**55)[0]
+        if len(invalid_packet_ids)>0:
             warnings.warn('Invalid first sample(s) detected in ncs file'
-                            '(paket id(s) %i)! This error is ignored in'
-                            'subsequent routines.'%(invalid_paket_ids))
-            self.parameters_ncs[channel_id]['invalid_first_samples'] = invalid_paket_ids
+                            '(packet id(s) %i)! This error is ignored in'
+                            'subsequent routines.'%(invalid_packet_ids))
+            self.parameters_ncs[channel_id]['invalid_first_samples'] = invalid_packet_ids
 
-            #checking consistency of data around corrupted paket time
-            for invalid_paket_id in invalid_paket_ids:
-                if invalid_paket_id < 2 or invalid_paket_id > len(filehandle) -2:
-                    raise ValueError('Corrupted ncs data paket at the beginning'
+            #checking consistency of data around corrupted packet time
+            for invalid_packet_id in invalid_packet_ids:
+                if invalid_packet_id < 2 or invalid_packet_id > len(filehandle) -2:
+                    raise ValueError('Corrupted ncs data packet at the beginning'
                                         'or end of file.')
-                elif (timestamps[invalid_paket_id+1] - timestamps[invalid_paket_id-1]
-                != 2* (timestamps[invalid_paket_id-1] - timestamps[invalid_paket_id-2])):
-                    raise ValueError('Starting times of ncs data pakets around'
-                                     'corrupted data paket are not consistent!')
+                elif (timestamps[invalid_packet_id+1] - timestamps[invalid_packet_id-1]
+                != 2* (timestamps[invalid_packet_id-1] - timestamps[invalid_packet_id-2])):
+                    raise ValueError('Starting times of ncs data packets around'
+                                     'corrupted data packet are not consistent!')
 
 
     ############ Supplementory Functions ###########################
