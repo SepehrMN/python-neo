@@ -891,21 +891,6 @@ class NeuralynxIO(BaseIO):
 
 ################# Memory Mapping Methods
 
-    # def __mmap_nse_file(self, filename):
-    #     """ Memory map the Neuralynx .nse file """
-    #     nse_dtype = np.dtype([
-    #         ('timestamp', '<u8'),
-    #         ('sc_number', '<u4'),
-    #         ('cell_number', '<u4'),
-    #         ('params', '<u4',   (8,)),
-    #         ('data', '<i2', (32, 1)),
-    #     ])
-    #     if getsize(self.sessiondir + '/' + filename) > 16384:
-    #         return np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
-    #     else:
-    #         return None
-
-
     def __mmap_nse_packets(self,filename):
         """
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
@@ -926,36 +911,9 @@ class NeuralynxIO(BaseIO):
             features = np.array(features,dtype='i4')
 
             data_points = data[:,24:56].astype('i2')
-            unit_ids = None #data[:,56]
             del data
-            return timestamps, channel_id, cell_number, features, data_points, unit_ids
+            return timestamps, channel_id, cell_number, features, data_points
         else: return None
-
-
-    # def __mmap_nse_time_stamps(self, filename):
-    #     """ Memory map the Neuralynx .nse file """
-    #     nse_dtype = np.dtype([
-    #         ('timestamp', '<u8'),
-    #         ('rest', 'V102'),
-    #         ('channel','<i2')])
-    #     if getsize(self.sessiondir + '/' + filename) > 16384:
-    #         data = np.memmap(self.sessiondir + '/' + filename, dtype=nse_dtype, mode='r', offset=16384)
-    #         return copy.deepcopy(np.array([[i[0],i[2]] for i in data]))
-    #     else:
-    #         return None
-
-
-    #different methods for reading different parts of ncs files in efficient ways
-    # def __mmap_ncs_file(self, filename):
-    #     """ Memory map the Neuralynx .ncs file """
-    #     ncs_dtype = np.dtype([
-    #         ('timestamp', '<u8'),
-    #         ('channel_number', '<u4'),
-    #         ('sample_freq', '<u4'),
-    #         ('valid_samples', '<u4'),
-    #         ('samples', '<i2', (512)),
-    #     ])
-    #     return np.memmap(self.sessiondir + '/' + filename, dtype=ncs_dtype, mode='r', offset=16384)
 
 
     def __mmap_ncs_data(self,filename):
@@ -1019,6 +977,30 @@ class NeuralynxIO(BaseIO):
                                          dtype=nse_dtype, mode='r', offset=16384)
         else: return None
 
+
+    def __mmap_ntt_packets(self,filename):
+        """
+        Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
+        Reading standard dtype improves speed, but timestamps need to be reconstructed
+        """
+        # TODO: Check if 'CHANNEL' really never occurs in file (last entry of data packet
+        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        if filesize > 16384:
+            data = np.memmap(self.sessiondir + '/' + filename,
+                            dtype='<u2', shape = ((filesize-16384)/2/152,152),
+                            mode='r', offset=16384)
+
+            # reconstructing original data
+            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2*32 + data[:,3]*2*48 # first 4 ints -> timestamp in microsec
+            channel_id = data[:,4] + data[:,5]*2**16
+            cell_number = data[:,6] + data[:,7]*2**16
+            features = [data[:,p] + data[:,p+1]*2**16 for p in range(8,23,2)] #this is inconsistent with the Neuraview output as this can be negative
+            features = np.array(features,dtype='i4')
+
+            data_points = data[:,24:152].astype('i2').reshape((4,32))
+            del data
+            return timestamps, channel_id, cell_number, features, data_points
+        else: return None
 
 
     #___________________________ header extraction __________________________
