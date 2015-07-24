@@ -109,15 +109,17 @@ class NeuralynxIO(BaseIO):
     # a database this info is for GUI stuff also
     mode = 'file'
 
-    # hardcoded parameters from manual
+    # hardcoded parameters from manual, which are not present in data files
     nev_time_unit = pq.microsecond
     ncs_time_unit = pq.microsecond
     nse_time_unit = pq.microsecond
+    ntt_time_unit = pq.microsecond
+    # unit of sampling rate in ncs files
+    ncs_sr_unit = pq.Hz
 
 
 
-
-    def __init__(self, sessiondir=None, cachedir = None, print_diagnostic=False):
+    def __init__(self, sessiondir=None, cachedir = None, print_diagnostic=False, filename=None):
         """
         Arguments:
             sessiondir : the directory the files of the recording session are
@@ -131,6 +133,10 @@ class NeuralynxIO(BaseIO):
 
         # TODO: Implement checksum and cache directory
         BaseIO.__init__(self)
+
+        # possiblity to provide filename instead of sessiondir for IO compatibility
+        if filename != None and sessiondir==None:
+            sessiondir = filename
 
         if sessiondir == None:
             raise ValueError('Must provide a directory containing data files of'
@@ -219,14 +225,14 @@ class NeuralynxIO(BaseIO):
         elif type(t_stops) != list or any([(type(i) != pq.Quantity and i != None) for i in t_stops]):
             raise ValueError('Invalid specification of t_stops.')
 
-        sampling_rate = 1*pq.CompoundUnit('%i*Hz'%(self.parameters_ncs.values()[0]['sampling_rate']))
+        # sampling_rate = 1*pq.CompoundUnit('%i*Hz'%(self.parameters_ncs.values()[0]['sampling_rate']))
         # adapting t_starts and t_stops to known gap times
         for gap in self.parameters_global['gaps']:
             gap=gap[0]
             for e in range(len(t_starts)):
                 t1,t2 = t_starts[e], t_stops[e]
-                gap_start = (gap[1] - self.parameters_global['t_start']) *self.ncs_time_unit
-                gap_stop = (gap[2] - self.parameters_global['t_start']) *self.ncs_time_unit
+                gap_start = gap[1]*self.ncs_time_unit - self.parameters_global['t_start']
+                gap_stop =  gap[2]*self.ncs_time_unit- self.parameters_global['t_start']
                 if ((t1==t2==None)
                         or (t1==None and t2!=None and t2.rescale(self.ncs_time_unit)>gap_stop)
                         or (t2==None and t1!=None and t1.rescale(self.ncs_time_unit)<gap_stop)
@@ -407,10 +413,10 @@ class NeuralynxIO(BaseIO):
 
         # ensure meaningful values for requested start and stop times
         # + rescaling minimal time to 0ms
-        if t_start==None or t_start < (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start'] ) * self.ncs_time_unit:
-            t_start = (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start']) * self.ncs_time_unit
-        if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']) *self.ncs_time_unit:
-            t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start']) *self.ncs_time_unit
+        if t_start==None or t_start < (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start'] ):
+            t_start = (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start'])
+        if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']):
+            t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start'])
 
         if t_start >= t_stop:
             raise ValueError('Requested start time (%s) is later than / equal to stop time (%s).'%(t_start,t_stop))
@@ -421,7 +427,7 @@ class NeuralynxIO(BaseIO):
             p_id_start = 0
         else:
 
-            tstamps = (header_time_data - self.parameters_global['t_start']) * self.ncs_time_unit
+            tstamps = header_time_data * self.ncs_time_unit - self.parameters_global['t_start']
 
             #find data packet to start with signal construction
             starts = np.where(tstamps<=t_start)[0]
@@ -455,12 +461,13 @@ class NeuralynxIO(BaseIO):
             ################TODO: Check transformation of recording signal into physical signal!
 
         #defining sampling rate for rescaling purposes
-        sampling_rate = 1*pq.CompoundUnit('%i*Hz'%(self.parameters_ncs[chid]['sampling_rate']))
+        sampling_rate = self.parameters_ncs[chid]['sampling_unit']
+        # sampling_unit = pq.CompoundUnit('1*%s*%s'%(sampling_rate.magnitude, self.ncs_sr_unit.dimensionality.keys()[0].symbol))
         #creating neo AnalogSignalArray containing data
         anasig = AnalogSignalArray(signal = pq.Quantity(sig,unit, copy = False),
                                                     sampling_rate = sampling_rate,
                                                     # rescaling t_start to sampling time units
-                                                    t_start = ((header_time_data[p_id_start] - self.parameters_global['t_start']) * self.ncs_time_unit).rescale(1/sampling_rate),
+                                                    t_start = (header_time_data[p_id_start] * self.ncs_time_unit - self.parameters_global['t_start']).rescale(1/sampling_rate),
                                                     name = 'channel_%i'%(chid),
                                                     channel_index = chid)
 
@@ -502,10 +509,10 @@ class NeuralynxIO(BaseIO):
 
         # ensure meaningful values for requested start and stop times
         # + rescaling minimal time to 0ms
-        if t_start==None or t_start < (self.parameters_nev['t_start'] - self.parameters_global['t_start'] ) * self.nev_time_unit:
-            t_start = (self.parameters_nev['t_start'] - self.parameters_global['t_start']) * self.nev_time_unit
-        if t_stop==None or t_stop > (self.parameters_nev['t_stop'] - self.parameters_global['t_start']) *self.nev_time_unit:
-            t_stop= (self.parameters_nev['t_stop']  - self.parameters_global['t_start']) *self.nev_time_unit
+        if t_start==None or t_start < (self.parameters_nev[filename_nev]['t_start'] - self.parameters_global['t_start'] ):
+            t_start = (self.parameters_nev[filename_nev]['t_start'] - self.parameters_global['t_start'])
+        if t_stop==None or t_stop > (self.parameters_nev[filename_nev]['t_stop'] - self.parameters_global['t_start']):
+            t_stop= (self.parameters_nev[filename_nev]['t_stop']  - self.parameters_global['t_start'])
 
         if t_start >= t_stop:
             raise ValueError('Requested start time (%s) is later than / equal to stop time (%s).'%(t_start,t_stop))
@@ -513,16 +520,15 @@ class NeuralynxIO(BaseIO):
 
         data = self.__mmap_nev_file(filename_nev)
 
-        for marker_i, name_i in self.parameters_nev['digital_markers'].iteritems():
+        for marker_i, name_i in self.parameters_nev[filename_nev]['digital_markers'].iteritems():
             # Extract all time stamps of digital markers and rescaling time
-            marker_times = np.array([event[3]-self.parameters_global['t_start'] for event in data if event[4]==marker_i])
+            marker_times = np.array([event[3] - self.parameters_global['t_start'].rescale(self.nev_time_unit).magnitude for event in data if event[4]==marker_i]) * self.nev_time_unit
 
-            if self.parameters_global['spike_offset'] == None: offset=0
-            else: offset=self.parameters_global['spike_offset']
+            offset = self.parameters_global['t_start']
 
             #only consider Events in the requested time window (t_start, t_stop) TODO!!!!!!
-            marker_times = marker_times[((marker_times-offset) > t_start.rescale(self.nev_time_unit).magnitude) &
-                                        ((marker_times-offset) > t_stop.rescale(self.nev_time_unit).magnitude)]
+            marker_times = marker_times[((marker_times-offset) > t_start.rescale(self.nev_time_unit)) &
+                                        ((marker_times-offset) > t_stop.rescale(self.nev_time_unit))]
 
             ev = EventArray(times=pq.Quantity(marker_times-offset, units=self.nev_time_unit, dtype="int"),
                                 labels= name_i,
@@ -578,13 +584,13 @@ class NeuralynxIO(BaseIO):
 
         # ensure meaningful values for requested start and stop times
         # + rescaling minimal time to 0ms
-        if t_start==None or t_start < (self.parameters_nse[chid]['t_start'] - self.parameters_global['t_start'] ) * self.nse_time_unit:
-            t_start = (self.parameters_nse[chid]['t_first'] - self.parameters_global['t_start']) * self.nse_time_unit
+        if t_start==None or t_start < (self.parameters_nse[chid]['t_start'] - self.parameters_global['t_start'] ):
+            t_start = (self.parameters_nse[chid]['t_first'] - self.parameters_global['t_start'])
 
         # using t_stop of ncs, because nse does not contain reliable stopt time.
         if chid in self.parameters_ncs:
-            if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']) *self.nse_time_unit:
-                t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start']) *self.nse_time_unit
+            if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']):
+                t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start'])
         else:
             if t_stop==None:
                 t_stop= (sys.maxsize) *self.nse_time_unit
@@ -664,15 +670,22 @@ class NeuralynxIO(BaseIO):
         # Scanning session directory for recorded files
         self.sessionfiles = [ f for f in listdir(self.sessiondir) if isfile(join(self.sessiondir,f)) ]
 
-
+        # Listing available files
         self.ncs_avail = []
         self.nse_avail = []
         self.nev_avail = []
         self.ntt_avail = []
 
+        # Listing associated (=non corrupted, non empty files)
+        self.ncs_asso = []
+        self.nse_asso = []
+        self.nev_asso = []
+        self.ntt_asso = []
+
         # check if there are any changes of the data files -> new data check run
         check_files = True
         if cachedir != None:
+            self._diagnostic_print('Calculating hash of session files to check for cached parameter files.')
             cachefile = cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys'
             if not os.path.exists(cachedir + '/' + self.sessiondir.split('/')[-1]):
                 os.makedirs(cachedir + '/' + self.sessiondir.split('/')[-1])
@@ -752,6 +765,7 @@ class NeuralynxIO(BaseIO):
                 # Check ncs file for gaps
                 self.__ncs_gap_check(filehandle)
 
+                self.ncs_asso.append(ncs_file)
 
             #=======================================================================
             # # Scan NSE files
@@ -785,6 +799,7 @@ class NeuralynxIO(BaseIO):
                 channel_id = self.get_channel_id_by_file_name(nse_file)
                 self.__read_nse_text_header(nse_file,channel_id)
 
+                self.nse_asso.append(nse_file)
 
             #=======================================================================
             # # Scan NEV files
@@ -798,6 +813,8 @@ class NeuralynxIO(BaseIO):
 
                 # Reading file
                 filehandle = self.__mmap_nev_file(nev_file)
+                if filehandle == None:
+                    continue
 
                 try:
                     # Checking consistency of nev file
@@ -813,7 +830,7 @@ class NeuralynxIO(BaseIO):
                 # Reading txt file header
                 self.__read_nev_text_header(nev_file)
 
-
+                self.nev_asso.append(nev_file)
 
             #=======================================================================
             # # Scan NTT files
@@ -827,6 +844,8 @@ class NeuralynxIO(BaseIO):
 
                 # Reading file
                 filehandle = self.__mmap_ntt_file(ntt_file)
+                if filehandle == None:
+                    continue
 
                 try:
                     # Checking consistency of nev file
@@ -842,61 +861,42 @@ class NeuralynxIO(BaseIO):
                 # Reading txt file header
                 self.__read_ntt_text_header(ntt_file)
 
+                self.ntt_asso.append(ntt_file)
+
             #=======================================================================
             # # Check consistency across files
             #=======================================================================
 
             # TODO: Implement also ntt files in this part
-            # check starting times of .ncs files
-            if len(np.unique([i['t_start'] for i in self.parameters_ncs.values()])) > 1:
-                raise ValueError('NCS files do not start at same time point.')
 
 
-            # check recoding_opened times (from txt header) for different files
-            # This is performed file type wise as there can be opening differences of up to 15 seconds...
-            # TODO: find out why this is the case (see above)
-            nev_parameters = {None: self.parameters_nev} if self.parameters_nev else {}
-            for parameter_collection in [self.parameters_ncs, self.parameters_nse, nev_parameters]:
+            # check RECORDING_OPENED / CLOSED times (from txt header) for different files
+            for parameter_collection in [self.parameters_ncs, self.parameters_nse, self.parameters_nev, self.parameters_ntt]:
+                # check recoding_closed times for specific file types
                 if any(np.abs(np.diff([i['recording_opened'] for i in parameter_collection.values()]))>datetime.timedelta(seconds=0.1)):
                     raise ValueError('NCS files were opened for recording with a delay greater than 0.1 second.')
 
-                # check recoding_opened times (from txt header) for different ncs files
+                # check recoding_closed times for specific file types
                 if any(np.diff([i['recording_closed'] for i in parameter_collection.values() if i['recording_closed'] != None])>datetime.timedelta(seconds=0.1)):
                     raise ValueError('NCS files were closed after recording with a delay greater than 0.1 second.')
 
-            nev_parameters = [self.parameters_nev] if self.parameters_nev else []
-            parameter_collection = self.parameters_ncs.values() + self.parameters_nse.values() + nev_parameters
+            # get maximal duration of any file in the recording
+            parameter_collection = self.parameters_ncs.values() + self.parameters_nse.values() + self.parameters_ntt.values() + self.parameters_nev.values()
             self.parameters_global['recording_opened'] = min([i['recording_opened']for i in parameter_collection])
             self.parameters_global['recording_closed'] = max([i['recording_closed']for i in parameter_collection])
 
+            ###### Set up GLOBAL TIMING SCHEME
+            for file_type, parameter_collection in [('ncs',self.parameters_ncs), ('nse',self.parameters_nse), ('nev',self.parameters_nev), ('ntt',self.parameters_ntt)]:
+                # check starting times
+                name_t1, name_t2 = ['t_start','t_stop'] if file_type != 'nse' and file_type != 'ntt' else ['t_first','t_last']
+                if file_type != 'nse' and file_type != 'ntt' and len(np.unique(np.array([i[name_t1].magnitude for i in parameter_collection.values()]))) > 1:
+                    raise ValueError('%s files do not start at same time point.'%file_type)
+                if len([i[name_t1] for i in parameter_collection.values()]):
+                    self.parameters_global['%s_t_start'%file_type] = min([i[name_t1] for i in parameter_collection.values()])
+                    self.parameters_global['%s_t_stop'%file_type] = min([i[name_t2] for i in parameter_collection.values()])
 
-            self.parameters_global['t_start'] = 0
-            self.parameters_global['event_offset'] = 0
-            # check if also nev file starts at same time point
-            if self.nev_avail!=[] and self.ncs_avail != {} and self.parameters_ncs.values()[0]['t_start'] != self.parameters_nev['Starting_Recording'][0]:
-                warnings.warn('NCS and event of recording start are not the same!')
-
-            # check if nse time is available and extract first time point as t_first
-            if self.nse_avail != [] and \
-                           self.parameters_nse.values()[0]['t_first'] != None:
-               t_first = self.parameters_nse.values()[0]['t_first']
-            else: t_first = np.inf #using inf, because None is handles as if neg. number
-
-            #setting global time frame
-            if self.nev_avail!=[]:
-                self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'],
-                                                    self.parameters_nev['t_start'],
-                                                    t_first)
-                self.parameters_global['event_offset'] = self.parameters_nev['t_start'] \
-                                                            - self.parameters_ncs.values()[0]['t_start']
-            else:
-                self.parameters_global['t_start'] = min(self.parameters_ncs.values()[0]['t_start'], t_first)
-                self.parameters_global['event_offset'] = self.parameters_ncs.values()[0]['t_start']
-
-            # Offset time of .nse file can not be determined for sure as there is no
-            # time stamp of recording start in this file -> check by by comparison to .ncs
-            self.parameters_global['spike_offset'] = None
-
+            self.parameters_global['t_start'] = min([self.parameters_global['%s_t_start'%t] for t in ['ncs','nev','nse','ntt'] if '%s_t_start'%t in self.parameters_global])
+            self.parameters_global['t_stop'] = min([self.parameters_global['%s_t_stop'%t] for t in ['ncs','nev','nse','ntt'] if '%s_t_start'%t in self.parameters_global])
 
 
             # checking gap consistency
@@ -1118,7 +1118,7 @@ class NeuralynxIO(BaseIO):
 
         # extracting filename and recording opening/closing time
         header_dict = self.__read_intro_txt_header(nev_text_header)
-        self.parameters_nev.update(header_dict)
+        self.parameters_nev[filename_nev].update(header_dict)
 
 
     def __read_intro_txt_header(self,txt_header):
@@ -1197,9 +1197,10 @@ class NeuralynxIO(BaseIO):
             raise ValueError('Detected multiple ncs files for channel_id %i.'%(channel_id))
         else:
             self.parameters_ncs[channel_id] = { 'filename':filename,
-                                                't_start': t_start,
-                                                't_stop': t_stop,
-                                                'sampling_rate': sr,
+                                                't_start': t_start * self.ncs_time_unit,
+                                                't_stop': t_stop * self.ncs_time_unit,
+                                                'sampling_rate': sr * self.ncs_sr_unit,
+                                                'sampling_unit': pq.CompoundUnit( '%f*%s'%(sr,self.ncs_sr_unit.symbol)),
                                                 'gaps': []}
 
             return {channel_id: self.parameters_ncs[channel_id]}
@@ -1224,6 +1225,7 @@ class NeuralynxIO(BaseIO):
         if filehandle != None:
 
             t_first = timestamps[0] # in microseconds
+            t_last = timestamps[-1] # in microseconds
             channel_id = channel_ids[0]
             cell_count = cell_numbers[0] #number of cells identified
             # spike_parameters = filehandle[0][3]
@@ -1236,7 +1238,8 @@ class NeuralynxIO(BaseIO):
         #     self._diagnostic_print('Empty file: No information contained in %s'%filename)
 
             self.parameters_nse[channel_id] = { 'filename':filename,
-                                                't_first': t_first,
+                                                't_first': t_first * self.nse_time_unit,
+                                                't_last': t_last * self.nse_time_unit,
                                                 'cell_count': cell_count}
 
     def __read_ntt_data_header(self, filehandle, filename):
@@ -1258,6 +1261,7 @@ class NeuralynxIO(BaseIO):
         if filehandle != None:
 
             t_first = timestamps[0] # in microseconds
+            t_last = timestamps[-1] # in microseconds
             channel_id = channel_ids[0]
             cell_count = cell_numbers[0] #number of cells identified
             # spike_parameters = filehandle[0][3]
@@ -1270,7 +1274,8 @@ class NeuralynxIO(BaseIO):
         #     self._diagnostic_print('Empty file: No information contained in %s'%filename)
 
             self.parameters_ntt[channel_id] = { 'filename':filename,
-                                                't_first': t_first,
+                                                't_first': t_first * self.ntt_time_unit,
+                                                't_last': t_last * self.nse_time_unit,
                                                 'cell_count': cell_count}
 
     def __read_nev_data_header(self, filehandle, filename):
@@ -1288,26 +1293,31 @@ class NeuralynxIO(BaseIO):
         '''
 
         # Extracting basic recording events to be able to check recording consistency
-        if 'Starting_Recording' in self.parameters_nev:
-            raise ValueError('Trying to read second nev file. Only one can be handled.')
-        self.parameters_nev['Starting_Recording'] = []
-        for event in filehandle:
-            if event[4] == 11: # meaning recording start
-                self.parameters_nev['Starting_Recording'].append(event[3])
+        if filename in self.parameters_nev:
+            raise ValueError('Detected multiple nev files of name %s.'%(filename))
+        else:
+            self.parameters_nev[filename] = {}
+            if 'Starting_Recording' in self.parameters_nev[filename]:
+                raise ValueError('Trying to read second nev file of name %s. '
+                                 ' Only one can be handled.'%filename)
+            self.parameters_nev[filename]['Starting_Recording'] = []
+            for event in filehandle:
+                if event[4] == 11: # meaning recording start
+                    self.parameters_nev[filename]['Starting_Recording'].append(event[3])
 
-        if len(self.parameters_nev['Starting_Recording']) < 1:
-            raise ValueError('No Event "Starting_Recording" detected in %s'%(filename))
+            if len(self.parameters_nev[filename]['Starting_Recording']) < 1:
+                raise ValueError('No Event "Starting_Recording" detected in %s'%(filename))
 
-        self.parameters_nev['t_start'] = min(self.parameters_nev['Starting_Recording'])
-        self.parameters_nev['t_stop'] = filehandle[-1][3] # t_stop = time stamp of last event in file (assuming chronological order)
+            self.parameters_nev[filename]['t_start'] = min(self.parameters_nev[filename]['Starting_Recording']) * self.nev_time_unit
+            self.parameters_nev[filename]['t_stop'] = max([filehandle[i][3] for i in range(len(filehandle))]) * self.nev_time_unit # t_stop = time stamp of last event in file
 
 
 
-        # extract all occurring event marker ids
-        event_type_collection = {}
-        for event in filehandle:
-            event_type_collection[event[4]] = event[10]
-        self.parameters_nev['digital_markers'] = copy.deepcopy(event_type_collection)  # entries (marker_id,name)
+            # extract all occurring event marker ids
+            event_type_collection = {}
+            for event in filehandle:
+                event_type_collection[event[4]] = event[10]
+            self.parameters_nev[filename]['digital_markers'] = copy.deepcopy(event_type_collection)  # entries (marker_id,name)
 
 
         # TODO: Extract other important Recording events. But which ones?
