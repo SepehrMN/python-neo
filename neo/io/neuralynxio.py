@@ -107,31 +107,36 @@ class NeuralynxIO(BaseIO):
     # mode can be 'file' or 'dir' or 'fake' or 'database'
     # the main case is 'file' but some reader are base on a directory or
     # a database this info is for GUI stuff also
-    mode = 'file'
+    mode = 'dir'
 
-    # hardcoded parameters from manual, which are not present in data files
+    # hardcoded parameters from manual, which are not present in Neuralynx data files
+    # unit of timestamps in different files
     nev_time_unit = pq.microsecond
     ncs_time_unit = pq.microsecond
     nse_time_unit = pq.microsecond
     ntt_time_unit = pq.microsecond
-    # unit of sampling rate in ncs files
+    # unit of sampling rate in different files
     ncs_sr_unit = pq.Hz
+    nse_sr_unit = pq.Hz
+    ntt_sr_unit = pq.Hz
 
 
 
     def __init__(self, sessiondir=None, cachedir = None, print_diagnostic=False, filename=None):
         """
         Arguments:
-            sessiondir : the directory the files of the recording session are
+            sessiondir: the directory the files of the recording session are
                             collected. Default 'None'.
             print_diagnostic: indicates, whether information about the loading of
                             data is printed in terminal or not. Default 'False'.
             cachedir: the directory where metadata about the recording session is
                             read from and written to.
+            filename: this argument is handles the same as sessiondir and is only
+                            added for external IO interfaces. The value of sessiondir
+                            has priority over filename.
 
         """
 
-        # TODO: Implement checksum and cache directory
         BaseIO.__init__(self)
 
         # possiblity to provide filename instead of sessiondir for IO compatibility
@@ -143,9 +148,7 @@ class NeuralynxIO(BaseIO):
                                 ' of one recording session.')
 
         # remove filename if specific file was passed
-        if sessiondir.endswith('.ncs') \
-            or sessiondir.endswith('.nev') \
-            or sessiondir.endswith('.nse'):
+        if any([sessiondir.endswith('.%s'%ext) for ext in self.extensions]):
             sessiondir = sessiondir[:sessiondir.rfind('/')]
 
         # remove / for consistent directory handling
@@ -163,7 +166,7 @@ class NeuralynxIO(BaseIO):
 
 
     def read_block(self, lazy=False, cascade=True, t_starts=[None], t_stops=[None],
-                    channel_list=[], units=[], analogsignals=True, events=False,
+                    electrode_list=[], units=[], analogsignals=True, events=False,
                     waveforms = False):
         """
         Reads data in a requested time window and returns block with single segment
@@ -180,7 +183,7 @@ class NeuralynxIO(BaseIO):
                             requested time window to load. Has to contain the
                             same number of values as t_starts. If None or [None]
                             the complete session is loaded. Default '[None]'.
-            channel_list : list of integers containing the IDs of the requested
+            electrode_list : list of integers containing the IDs of the requested
                             to load. If [] all available channels will be loaded.
                             Default: [].
             units : list of integers containing the IDs of the requested units
@@ -202,7 +205,7 @@ class NeuralynxIO(BaseIO):
             NIO = io.NeuralynxIO(session_folder,print_diagnostic = True)
             block = NIO.read_block(lazy = False, cascade = True,
                                    t_starts = 0.1*pq.s, t_stops = 0.2*pq.s,
-                                   channel_list = [1,5,10], units = [1,2,3],
+                                   electrode_list = [1,5,10], units = [1,2,3],
                                    events = True, waveforms = True)
         """
         # Create block
@@ -228,7 +231,7 @@ class NeuralynxIO(BaseIO):
         # sampling_rate = 1*pq.CompoundUnit('%i*Hz'%(self.parameters_ncs.values()[0]['sampling_rate']))
         # adapting t_starts and t_stops to known gap times
         for gap in self.parameters_global['gaps']:
-            gap=gap[0]
+            # gap=gap_list[0]
             for e in range(len(t_starts)):
                 t1,t2 = t_starts[e], t_stops[e]
                 gap_start = gap[1]*self.ncs_time_unit - self.parameters_global['t_start']
@@ -242,21 +245,22 @@ class NeuralynxIO(BaseIO):
                     #inserting second time segment
                     t_starts.insert(e+1,gap_stop)
                     t_stops.insert(e+1,t2)
+                    warnings.warn('Substituted t_starts and t_stops in order to skip gap in recording session.')
 
 
-        #loading all channels if empty channel_list
-        if channel_list == []:
-            channel_list = self.parameters_ncs.keys()
+        #loading all channels if empty electrode_list
+        if electrode_list == []:
+            electrode_list = self.parameters_ncs.keys()
 
         # adding a segment for each t_start, t_stop pair
         for t_start,t_stop in zip(t_starts,t_stops):
             seg = self.read_segment(lazy=lazy, cascade=cascade,
                                     t_start=t_start, t_stop=t_stop,
-                                    channel_list=channel_list, units=units,
+                                    electrode_list=electrode_list, units=units,
                                     analogsignals=analogsignals, events=events,
                                     waveforms=waveforms)
             bl.segments.append(seg)
-        tools.populate_RecordingChannel(bl, remove_from_annotation=False)
+        populate_RecordingChannel(bl, remove_from_annotation=False)
 
         # This create rc and RCG for attaching Units
         rcg0 = bl.recordingchannelgroups[0]
@@ -266,7 +270,7 @@ class NeuralynxIO(BaseIO):
                     return rc
         for seg in bl.segments:
             for st in seg.spiketrains:
-                chan = st.annotations['channel_index']
+                chan = st.annotations['electrode_id']
                 rc = find_rc(chan)
                 if rc is None:
                     rc = RecordingChannel(index = chan)
@@ -288,7 +292,7 @@ class NeuralynxIO(BaseIO):
 
 
     def read_segment(self,lazy=False, cascade=True, t_start=None, t_stop=None,
-                        channel_list=[], units=[], analogsignals=True,
+                        electrode_list=[], units=[], analogsignals=True,
                         events=False, waveforms=False):
         """Reads one Segment.
 
@@ -304,7 +308,7 @@ class NeuralynxIO(BaseIO):
                             Default 'True'.
             t_start : time (quantity) that the Segment begins. Default None.
             t_stop : time (quantity) that the Segment ends. Default None.
-            channel_list : list of integers containing the IDs of the requested
+            electrode_list : list of integers containing the IDs of the requested
                             to load. If [] all available channels will be loaded.
                             Default: [].
             units : list of integers containing the IDs of the requested units
@@ -321,14 +325,14 @@ class NeuralynxIO(BaseIO):
         """
 
         # input check
-        #loading all channels if empty channel_list
-        if channel_list == []:
-            channel_list = self.parameters_ncs.keys()
-        elif [v for v in channel_list if v in self.parameters_ncs.keys()]== []:
+        #loading all channels if empty electrode_list
+        if electrode_list == []:
+            electrode_list = self.parameters_ncs.keys()
+        elif [v for v in electrode_list if v in self.parameters_ncs.keys()]== []:
             # warn if non of the requested channels are present in this session
             warnings.warn('Requested channels %s are not present in session '
-                 '(contains only %s)'%(channel_list,self.parameters_ncs.keys()))
-            channel_list = []
+                 '(contains only %s)'%(electrode_list,self.parameters_ncs.keys()))
+            electrode_list = []
 
 
         seg = Segment(file_origin=self.filename)
@@ -336,9 +340,9 @@ class NeuralynxIO(BaseIO):
             return seg
 
         # Reading NCS Files #
-        # selecting ncs files to load based on channel_list requested
+        # selecting ncs files to load based on electrode_list requested
         if analogsignals:
-            for channel_id in channel_list:
+            for channel_id in electrode_list:
                 if channel_id in self.parameters_ncs:
                     file_ncs = self.parameters_ncs[channel_id]['filename']
                     self.read_ncs(file_ncs, seg, lazy, cascade, t_start=t_start, t_stop = t_stop)
@@ -348,13 +352,18 @@ class NeuralynxIO(BaseIO):
         # Reading NEV Files (Events)#
         # reading all files available
         if events:
-            for filename_nev in self.nev_avail:
+            for filename_nev in self.nev_asso:
                 self.read_nev(filename_nev, seg, lazy, cascade, t_start = t_start, t_stop = t_stop)
 
         # Reading NSE Files (Spikes)#
         # reading all nse files available  #TODO: Load only spikes of requested channels
-        for filename_nse in self.nse_avail:
+        for filename_nse in self.nse_asso:
             self.read_nse(filename_nse, seg, lazy, cascade, t_start = t_start, t_stop = t_stop, waveforms = waveforms)
+
+        # Reading NTT Files (Spikes)#
+        # reading all ntt files available  #TODO: Load only spikes of requested channels
+        for filename_ntt in self.ntt_asso:
+            self.read_ntt(filename_ntt, seg, lazy, cascade, t_start = t_start, t_stop = t_stop, waveforms = waveforms)
 
         return seg
 
@@ -372,9 +381,9 @@ class NeuralynxIO(BaseIO):
             lazy : Postpone actual reading of the data. Instead provide a dummy
                             AnalogSignalArray. Default 'False'.
             cascade : Not used in this context. Default: 'True'.
-            t_start : time (quantity) that the AnalogSignalArray begins.
+            t_start : time or sample (quantity or integer) that the AnalogSignalArray begins.
                             Default None.
-            t_stop : time (quantity) that the AnalogSignalArray ends.
+            t_stop : time or sample (quantity or integer) that the AnalogSignalArray ends.
                             Default None.
 
         Returns:
@@ -412,8 +421,14 @@ class NeuralynxIO(BaseIO):
         data = self.__mmap_ncs_data(filename_ncs)
 
         # ensure meaningful values for requested start and stop times
+        # in case time is provided in samples: transform to absolute time units
+        if isinstance(t_start,int):
+            t_start = t_start / self.parameters_ncs[chid]['sampling_rate']
+        if isinstance(t_stop,int):
+            t_stop = t_stop / self.parameters_ncs[chid]['sampling_rate']
+
         # + rescaling minimal time to 0ms
-        if t_start==None or t_start < (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start'] ):
+        if t_start==None or t_start < (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start']):
             t_start = (self.parameters_ncs[chid]['t_start'] - self.parameters_global['t_start'])
         if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']):
             t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start'])
@@ -456,7 +471,7 @@ class NeuralynxIO(BaseIO):
 
             # Not guaranteed to be present in the header!
             if 'ADBitVolts' in self.parameters_ncs[chid]:
-                sig *= self.parameters_ncs[chid]['ADBitVolts'] #Strong Assumption! Check Validity!
+                sig *= self.parameters_ncs[chid]['ADBitVolts'] #Strong Assumption! TODO: Check Validity!
                 unit = pq.V
             ################TODO: Check transformation of recording signal into physical signal!
 
@@ -479,12 +494,15 @@ class NeuralynxIO(BaseIO):
             anasig = anasig.time_slice(None,t_stop.rescale(anasig.t_start.units))
 
         anasig.annotations = self.parameters_ncs[chid]
+        anasig.annotations['electrode_id'] = chid
+        # this annotation is necesary for automatic genereation of recordingchannels
+        anasig.annotations['channel_index'] = chid
 
         seg.analogsignalarrays.append(anasig)
 
 
-    def read_nev(self, filename_nev, seg, lazy=False, cascade=True, t_start=None, t_stop=None,
-                     channel_list=[]):
+
+    def read_nev(self, filename_nev, seg, lazy=False, cascade=True, t_start=None, t_stop=None):
         '''
         Reads associated nev file and attaches its content as eventarray to
         provided neo segment.
@@ -506,6 +524,24 @@ class NeuralynxIO(BaseIO):
             TODO
         '''
 
+        if filename_nev[-4:]!='.nev':
+            filename_nev += '.nev'
+        if '/' in filename_nev:
+            filename_nev = filename_nev.split('/')[-1]
+
+        if filename_nev not in self.nev_asso:
+            raise ValueError('NeuralynxIO is attempting to read a file '
+                            'not associated to this session (%s).'%(filename_nev))
+
+        #TODO: Implement t_start and stop in samples (which ones?) for nev, nse, ntt files, too
+        # # ensure meaningful values for requested start and stop times
+        # # providing time is samples for nev file does not make sense as we don't know the underlying sampling rate
+        if isinstance(t_start,int):
+            raise ValueError('Requesting event information from nev file in samples does not make sense. '
+                             'Requested t_start %s'%t_start)
+        if isinstance(t_stop,int):
+            raise ValueError('Requesting event information from nev file in samples does not make sense. '
+                             'Requested t_stop %s'%t_stop)
 
         # ensure meaningful values for requested start and stop times
         # + rescaling minimal time to 0ms
@@ -520,28 +556,34 @@ class NeuralynxIO(BaseIO):
 
         data = self.__mmap_nev_file(filename_nev)
 
-        for marker_i, name_i in self.parameters_nev[filename_nev]['digital_markers'].iteritems():
+        for event_type in self.parameters_nev[filename_nev]['event_types']:
             # Extract all time stamps of digital markers and rescaling time
-            marker_times = np.array([event[3] - self.parameters_global['t_start'].rescale(self.nev_time_unit).magnitude for event in data if event[4]==marker_i]) * self.nev_time_unit
+            type_mask = [i for i in range(len(data)) if (data[i][4]==event_type['event_id']
+                                                         and data[i][5]==event_type['nttl']
+                                                         and data[i][10]==event_type['name'])]
+            marker_times = [t[3] for t in data[type_mask]] * self.nev_time_unit - self.parameters_global['t_start']
 
-            offset = self.parameters_global['t_start']
 
-            #only consider Events in the requested time window (t_start, t_stop) TODO!!!!!!
-            marker_times = marker_times[((marker_times-offset) > t_start.rescale(self.nev_time_unit)) &
-                                        ((marker_times-offset) > t_stop.rescale(self.nev_time_unit))]
 
-            ev = EventArray(times=pq.Quantity(marker_times-offset, units=self.nev_time_unit, dtype="int"),
-                                labels= name_i,
-                                name="Digital Marker " + str(marker_i),
+            #only consider Events in the requested time window (t_start, t_stop)
+            time_mask = [i for i in range(len(marker_times)) if (marker_times[i]>=t_start and marker_times[i]<t_stop)]
+            marker_times = marker_times[time_mask]
+
+            if len(marker_times) == 0:
+                continue
+
+            ev = EventArray(times=pq.Quantity(marker_times, units=self.nev_time_unit, dtype="int"),
+                                labels= event_type['name'],
+                                name="Digital Marker " + str(event_type),
                                 file_origin=filename_nev,
-                                marker_id=marker_i,
+                                marker_id=event_type['event_id'],
                                 digital_marker=True,
                                 analog_marker=False,
-                                analog_channel=0)
+                                nttl = event_type['nttl'])
 
             seg.eventarrays.append(ev)
 
-    def read_nse(self, filename_nse, seg, lazy=False, cascade=True, t_start=None, t_stop=None,
+    def read_nse(self, filename_nse, seg, lazy=False, cascade=True, t_start=None, t_stop=None, units=[],
                      waveforms = False):
         '''
         Reads nse file and attaches content as spike train to provided neo segment.
@@ -555,6 +597,7 @@ class NeuralynxIO(BaseIO):
             cascade : Not used in this context. Default: 'True'.
             t_start : time (quantity) that the SpikeTrain begins. Default None.
             t_stop : time (quantity) that the SpikeTrain ends. Default None.
+            units : unit ids to be loaded. If [], all units are loaded. Default [].
             waveforms : Load the waveform (up to 32 data points) for each
                             spike time. Default: False
 
@@ -564,6 +607,11 @@ class NeuralynxIO(BaseIO):
         Usage:
             TODO
         '''
+
+        if filename_nse[-4:]!='.nse':
+            filename_nse += '.nse'
+        if '/' in filename_nse:
+            filename_ncs = filename_nse.split('/')[-1]
 
         # extracting channel id of requested file
         channel_id = self.get_channel_id_by_file_name(filename_nse)
@@ -583,14 +631,21 @@ class NeuralynxIO(BaseIO):
 
 
         # ensure meaningful values for requested start and stop times
+        # in case time is provided in samples: transform to absolute time units
+        # ncs sampling rate is best guess if there is no explicit sampling rate given for nse values.
+        sr = self.parameters_nse[chid]['sampling_rate'] if 'sampling_rate' in self.parameters_nse[chid] else self.parameters_ncs[chid]['sampling_rate']
+        if isinstance(t_start,int):
+            t_start = t_start / sr
+        if isinstance(t_stop,int):
+            t_stop = t_stop / sr
+
         # + rescaling minimal time to 0ms
-        if t_start==None or t_start < (self.parameters_nse[chid]['t_start'] - self.parameters_global['t_start'] ):
+        if t_start==None or t_start < (self.parameters_nse[chid]['t_first'] - self.parameters_global['t_start'] ):
             t_start = (self.parameters_nse[chid]['t_first'] - self.parameters_global['t_start'])
 
-        # using t_stop of ncs, because nse does not contain reliable stopt time.
-        if chid in self.parameters_ncs:
-            if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']):
-                t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start'])
+        # This is not optimal, as there is no way to know how long the recording lasted after last spike
+        if t_stop==None or t_stop > (self.parameters_nse[chid]['t_last'] - self.parameters_global['t_start']):
+            t_stop= (self.parameters_nse[chid]['t_last']  - self.parameters_global['t_start'])
         else:
             if t_stop==None:
                 t_stop= (sys.maxsize) *self.nse_time_unit
@@ -603,25 +658,29 @@ class NeuralynxIO(BaseIO):
         [timestamps, channel_ids, cell_numbers, features, data_points] = self.__mmap_nse_packets(filename_nse)
 
 
-        # collecting spike times for each individual unit (assuming unit numbers
-        # start at 0 and go to #(number of units)
-        for unit_i in range(self.parameters_nse[chid]['cell_count']):
+        if units == []:
+            units = np.unique(cell_numbers)
+        elif not any([u in cell_numbers for u in units]):
+            self._diagnostic_print('None of the requested unit ids (%s) present in nse file %s (%s)'%(units,filename_nse,np.unique(cell_numbers)))
+
+
+        for unit_i in units:
 
             if not lazy:
                 # Extract all time stamps of that neuron on that electrode
-                spike_times = np.array([time[0] for time in timestamps
-                                        if time[1][4][1]==unit_i])
-                spikes = pq.Quantity((spike_times - self.parameters_global['t_start']),
-                                        units=self.nse_time_unit)
+                unit_mask = np.where(cell_numbers==unit_i)[0]
+                spike_times = timestamps[unit_mask] * self.nse_time_unit
+                spike_times= spike_times - self.parameters_global['t_start']
+                time_mask = np.where(np.logical_and(spike_times>=t_start, spike_times < t_stop))
+                spike_times = spike_times[time_mask]
             else:
-                spikes = pq.Quantity([], units=self.nse_time_unit)
+                spike_times= pq.Quantity([], units=self.nse_time_unit)
 
             # Create SpikeTrain object
-            st = SpikeTrain(times=spikes,
-                                dtype='int',
+            st = SpikeTrain(times=spike_times,
                                 t_start=t_start,
                                 t_stop=t_stop,
-                                sampling_rate=self.parameters_ncs.values()[0]['sampling_rate'],
+                                sampling_rate=self.parameters_ncs[chid]['sampling_rate'],
                                 name= "Channel %i, Unit %i"%(chid, unit_i),
                                 file_origin=filename_nse,
                                 unit_id=unit_i,
@@ -630,7 +689,131 @@ class NeuralynxIO(BaseIO):
             if waveforms and not lazy:
                 # Collect all waveforms of the specific unit
                 # For computational reasons: no units, no time axis
-                st.waveforms = np.array([data_points[t,:] for t in range(len(timestamps)) if cell_numbers[t]==unit_i])
+                st.waveforms = data_points[unit_mask][time_mask]
+
+            st.annotations = self.parameters_nse[chid]
+            st.annotations['electrode_id'] = chid
+            # This annotations is necessary for automatic generation of recordingchannels
+            st.annotations['channel_index'] = chid
+
+            seg.spiketrains.append(st)
+
+
+
+    def read_ntt(self, filename_ntt, seg, lazy=False, cascade=True, t_start=None, t_stop=None, units=[],
+                     waveforms = False):
+        '''
+        Reads ntt file and attaches content as spike train to provided neo segment.
+
+        Arguments:
+            filename_ntt : Name of the .ntt file to be loaded.
+            seg : Neo Segment, to which the Spiketrain containing the data
+                            will be attached.
+            lazy : Postpone actual reading of the data. Instead provide a dummy
+                            SpikeTrain. Default 'False'.
+            cascade : Not used in this context. Default: 'True'.
+            t_start : time (quantity) that the SpikeTrain begins. Default None.
+            t_stop : time (quantity) that the SpikeTrain ends. Default None.
+            units : unit ids to be loaded. If [], all units are loaded. Default [].
+            waveforms : Load the waveform (up to 32 data points) for each
+                            spike time. Default: False
+
+        Returns:
+            None
+
+        Usage:
+            TODO
+        '''
+
+        if filename_ntt[-4:]!='.ntt':
+            filename_ntt += '.ntt'
+        if '/' in filename_ntt:
+            filename_ntt = filename_ntt.split('/')[-1]
+
+        # extracting channel id of requested file
+        channel_id = self.get_channel_id_by_file_name(filename_ntt)
+        if channel_id != None:
+            chid = channel_id
+        else:
+            #if ntt file is empty it is not listed in self.parameters_ntt, but
+            # in self.ntt_avail
+            if filename_ntt  in self.ntt_avail:
+                warnings.warn('NeuralynxIO is attempting to read an empty '
+                            '(not associated) ntt file (%s). '
+                            'Not loading ntt file.'%(filename_ntt))
+                return
+            else:
+                raise ValueError('NeuralynxIO is attempting to read a file '
+                          'not associated to this session (%s).'%(filename_ntt))
+
+
+        # ensure meaningful values for requested start and stop times
+        # in case time is provided in samples: transform to absolute time units
+        if isinstance(t_start,int):
+            t_start = t_start / self.parameters_ntt[chid]['sampling_rate']
+        if isinstance(t_stop,int):
+            t_stop = t_stop / self.parameters_ntt[chid]['sampling_rate']
+
+        # + rescaling minimal time to 0ms
+        if t_start==None or t_start < (self.parameters_ntt[chid]['t_start'] - self.parameters_global['t_start'] ):
+            t_start = (self.parameters_ntt[chid]['t_first'] - self.parameters_global['t_start'])
+
+        # using t_stop of ncs, because ntt does not contain reliable stop time.
+        if chid in self.parameters_ncs:
+            if t_stop==None or t_stop > (self.parameters_ncs[chid]['t_stop'] - self.parameters_global['t_start']):
+                t_stop= (self.parameters_ncs[chid]['t_stop']  - self.parameters_global['t_start'])
+        else:
+            if t_stop==None:
+                t_stop= (sys.maxsize) *self.ntt_time_unit
+
+        if t_start >= t_stop:
+            raise ValueError('Requested start time (%s) is later than / equal to stop time (%s).'%(t_start,t_stop))
+
+
+        # reading data
+        [timestamps, channel_ids, cell_numbers, features, data_points] = self.__mmap_ntt_packets(filename_ntt)
+
+        #TODO: Implement 1 RecordingChannelGroup per Tetrode, such that each electrode gets its own recording channel
+
+        # collecting spike times for each individual unit (assuming unit numbers
+        # start at 0 and go to #(number of units)
+        if units == []:
+            units = np.unique(cell_numbers)
+        elif not any([u in cell_numbers for u in units]):
+            self._diagnostic_print('None of the requested unit ids (%s) present in ntt file %s (%s)'%(units,filename_ntt,np.unique(cell_numbers)))
+
+
+        for unit_i in units:
+
+            if not lazy:
+                # Extract all time stamps of that neuron on that electrode
+                mask = np.where(cell_numbers==unit_i)[0]
+                spike_times = timestamps[mask] * self.ntt_time_unit
+                spike_times= spike_times - self.parameters_global['t_start']
+                spike_times = spike_times[np.where(np.logical_and(spike_times>=t_start, spike_times < t_stop))]
+            else:
+                spike_times= pq.Quantity([], units=self.ntt_time_unit)
+
+            # Create SpikeTrain object
+            st = SpikeTrain(times=spike_times,
+                                t_start=t_start,
+                                t_stop=t_stop,
+                                sampling_rate=self.parameters_ncs[chid]['sampling_rate'],
+                                name= "Channel %i, Unit %i"%(chid, unit_i),
+                                file_origin=filename_ntt,
+                                unit_id=unit_i,
+                                channel_id=chid)
+
+            if waveforms and not lazy:
+                # Collect all waveforms of the specific unit
+                # For computational reasons: no units, no time axis
+                # transposing to adhere to neo guidline, which states that time should be in the first axis. This is stupid and not intuitive.
+                st.waveforms = np.array([data_points[t,:,:] for t in range(len(timestamps)) if cell_numbers[t]==unit_i]).transpose()
+
+            st.annotations = self.parameters_ntt[chid]
+            st.annotations['electrode_id'] = chid
+            # This annotations is necessary for automatic generation of recordingchannels
+            st.annotations['channel_index'] = chid
 
             # annotation of spiketrains?
             seg.spiketrains.append(st)
@@ -757,7 +940,7 @@ class NeuralynxIO(BaseIO):
 
                 # Reading txt file header
                 channel_id = self.get_channel_id_by_file_name(ncs_file)
-                self.__read_ncs_text_header(ncs_file,channel_id)
+                self.__read_text_header(ncs_file,self.parameters_ncs[channel_id])
 
                 # Check for invalid starting times of data packets in ncs file
                 self.__ncs_invalid_first_sample_check(filehandle)
@@ -797,7 +980,11 @@ class NeuralynxIO(BaseIO):
 
                 # Reading txt file header
                 channel_id = self.get_channel_id_by_file_name(nse_file)
-                self.__read_nse_text_header(nse_file,channel_id)
+                self.__read_text_header(nse_file,self.parameters_nse[channel_id])
+
+                if 'SamplingFrequency' in self.parameters_nse[channel_id]:
+                    self.parameters_nse[channel_id]['sampling_rate'] = (self.parameters_nse[channel_id]['SamplingFrequency']
+                                                                        * self.nse_sr_unit)
 
                 self.nse_asso.append(nse_file)
 
@@ -828,7 +1015,7 @@ class NeuralynxIO(BaseIO):
                 self.__read_nev_data_header(filehandle, nev_file)
 
                 # Reading txt file header
-                self.__read_nev_text_header(nev_file)
+                self.__read_text_header(nev_file,self.parameters_nev[nev_file])
 
                 self.nev_asso.append(nev_file)
 
@@ -866,9 +1053,6 @@ class NeuralynxIO(BaseIO):
             #=======================================================================
             # # Check consistency across files
             #=======================================================================
-
-            # TODO: Implement also ntt files in this part
-
 
             # check RECORDING_OPENED / CLOSED times (from txt header) for different files
             for parameter_collection in [self.parameters_ncs, self.parameters_nse, self.parameters_nev, self.parameters_ntt]:
@@ -910,7 +1094,7 @@ class NeuralynxIO(BaseIO):
                 if len(np.unique([i['gaps'][g] for i in self.parameters_ncs.values()])) != 1:
                     raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
                 else:
-                    self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'])
+                    self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'][g])
 
 
         # save results of association for future analysis
@@ -947,7 +1131,7 @@ class NeuralynxIO(BaseIO):
                             mode='r', offset=16384)
 
             # reconstructing original data
-            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2*32 + data[:,3]*2*48 # first 4 ints -> timestamp in microsec
+            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2**32 + data[:,3]*2**48 # first 4 ints -> timestamp in microsec
             channel_id = data[:,4] + data[:,5]*2**16
             cell_number = data[:,6] + data[:,7]*2**16
             features = [data[:,p] + data[:,p+1]*2**16 for p in range(8,23,2)] #this is inconsistent with the Neuraview output as this can be negative
@@ -1026,7 +1210,6 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        # TODO: Check if 'CHANNEL' really never occurs in file (last entry of data packet
         filesize = getsize(self.sessiondir + '/' + filename) #in byte
         if filesize > 16384:
             data = np.memmap(self.sessiondir + '/' + filename,
@@ -1034,7 +1217,7 @@ class NeuralynxIO(BaseIO):
                             mode='r', offset=16384)
 
             # reconstructing original data
-            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2*32 + data[:,3]*2*48 # first 4 ints -> timestamp in microsec
+            timestamps = data[:,0] + data[:,1]*2**16 + data[:,2]*2**32 + data[:,3]*2**48 # first 4 ints -> timestamp in microsec
             channel_id = data[:,4] + data[:,5]*2**16
             cell_number = data[:,6] + data[:,7]*2**16
             features = [data[:,p] + data[:,p+1]*2**16 for p in range(8,23,2)] #this is inconsistent with the Neuraview output as this can be negative
@@ -1048,33 +1231,41 @@ class NeuralynxIO(BaseIO):
 
     #___________________________ header extraction __________________________
 
-    def __read_ncs_text_header(self, filename_ncs, chid):
+    def __read_text_header(self,filename,parameter_dict):
         # Reading main file header (plain text, 16kB)
-        ncs_text_header = open(self.sessiondir + '/' + filename_ncs,'r').read(16384)
+        text_header = open(self.sessiondir + '/' + filename,'r').read(16384)
         #separating lines of header and ignoring last line (fill)
-        ncs_text_header = ncs_text_header.split('\r\n')[:-1]
+        text_header = text_header.split('\r\n')[:-1]
 
         # extracting filename and recording opening/closing time
-        header_dict = self.__read_intro_txt_header(ncs_text_header)
-        self.parameters_ncs[chid].update(header_dict)
+        header_dict = self.__read_intro_txt_header(text_header)
+        parameter_dict.update(header_dict)
 
 
-        # minor parameters possibly saved in header
-        ncs_minor_keys =  ['CheetahRev','AcqEntName','FileType','RecordSize',
+
+        # minor parameters possibly saved in header (for any file type)
+        minor_keys =  ['CheetahRev','AcqEntName','FileType','FileVersion','RecordSize',
                           'HardwareSubSystemName','HardwareSubSystemType',
                           'SamplingFrequency','ADMaxValue','ADBitVolts','NumADChannels',
                           'ADChannel','InputRange','InputInverted','DSPLowCutFilterEnabled',
                           'DspLowCutFrequency','DspLowCutNumTaps','DspLowCutFilterType',
                           'DSPHighCutFilterEnabled','DspHighCutFrequency','DspHighCutNumTaps',
-                          'DspHighCutFilterType','DspDelayCompensation','DspFilterDelay_\xb5s']
+                          'DspHighCutFilterType','DspDelayCompensation','DspFilterDelay_\xb5s',
+                           'DisabledSubChannels','WaveformLength','AlignmentPt','ThreshVal',
+                           'MinRetriggerSamples','SpikeRetriggerTime','DualThresholding',
+                           'Feature Peak 0','Feature Valley 1','Feature Energy 2','Feature Height 3',
+                           'Feature NthSample 4','Feature NthSample 5','Feature NthSample 6',
+                           'Feature NthSample 7']
 
 
         #extracting minor key values of header (only taking into account non-empty lines)
-        for i, minor_entry in enumerate([text for text in ncs_text_header[4:] if text != '']):
-            if minor_entry.split(' ')[0] in ['-' + ncs_minor_keys[i] for i in range(len(ncs_minor_keys))]:
+        for i, minor_entry in enumerate([text for text in text_header[4:] if text != '']):
+            matching_key = [key for key in minor_keys if minor_entry.strip('-').startswith(key)]
+            if len(matching_key)==1:
+                matching_key=matching_key[0]
+                minor_value = minor_entry.split(matching_key)[1].strip(' ').rstrip(' ')
 
                 # determine data type of entry
-                minor_value = minor_entry.split(' ')[1]
                 if minor_value.isdigit():
                     minor_value = int(minor_value)
                 else:
@@ -1083,42 +1274,102 @@ class NeuralynxIO(BaseIO):
                     except:
                         pass
 
-                # assign value of correct data type to ncs parameter dictionary
-                self.parameters_ncs[chid][minor_entry.split(' ')[0][1:]] = minor_value
+                if matching_key in parameter_dict:
+                    warnings.warn('Multiple entries for %s in text header of %s'%(matching_key,filename))
+                else:
+                    parameter_dict[matching_key] = minor_value
+            elif len(matching_key)>1:
+                raise ValueError('Inconsistent minor key list for text header interpretation.')
+            else:
+                warnings.warn('Skipping text header entry %s, because it is not in minor key list'%minor_entry)
 
-        self._diagnostic_print('Successfully decoded text header of ncs file (%s).'%(filename_ncs))
+        self._diagnostic_print('Successfully decoded text header of file (%s).'%(filename))
 
 
-
-    def __read_nse_text_header(self,filename_nse,chid):
-        # Reading main file header (plain text, 16kB)
-        nse_text_header = open(self.sessiondir + '/' + filename_nse,'r').read(16384)
-        #separating lines of header and ignoring last line (fill)
-        nse_text_header = nse_text_header.split('\r\n')[:-1]
-
-        # extracting filename and recording opening/closing time
-        header_dict = self.__read_intro_txt_header(nse_text_header)
-        self.parameters_nse[chid].update(header_dict)
-
-    def __read_ntt_text_header(self,filename_ntt,chid):
-        # Reading main file header (plain text, 16kB)
-        ntt_text_header = open(self.sessiondir + '/' + filename_ntt,'r').read(16384)
-        #separating lines of header and ignoring last line (fill)
-        ntt_text_header = ntt_text_header.split('\r\n')[:-1]
-
-        # extracting filename and recording opening/closing time
-        header_dict = self.__read_intro_txt_header(ntt_text_header)
-        self.parameters_ntt[chid].update(header_dict)
-
-    def __read_nev_text_header(self,filename_nev):
-        # Reading main file header (plain text, 16kB)
-        nev_text_header = open(self.sessiondir + '/' + filename_nev,'r').read(16384)
-        #separating lines of header and ignoring last line (fill)
-        nev_text_header = nev_text_header.split('\r\n')[:-1]
-
-        # extracting filename and recording opening/closing time
-        header_dict = self.__read_intro_txt_header(nev_text_header)
-        self.parameters_nev[filename_nev].update(header_dict)
+    # def __read_ncs_text_header(self, filename_ncs, chid):
+    #     # Reading main file header (plain text, 16kB)
+    #     ncs_text_header = open(self.sessiondir + '/' + filename_ncs,'r').read(16384)
+    #     #separating lines of header and ignoring last line (fill)
+    #     ncs_text_header = ncs_text_header.split('\r\n')[:-1]
+    #
+    #     # extracting filename and recording opening/closing time
+    #     header_dict = self.__read_intro_txt_header(ncs_text_header)
+    #     self.parameters_ncs[chid].update(header_dict)
+    #
+    #
+    #
+    #     # minor parameters possibly saved in header
+    #     ncs_minor_keys =  ['CheetahRev','AcqEntName','FileType','RecordSize',
+    #                       'HardwareSubSystemName','HardwareSubSystemType',
+    #                       'SamplingFrequency','ADMaxValue','ADBitVolts','NumADChannels',
+    #                       'ADChannel','InputRange','InputInverted','DSPLowCutFilterEnabled',
+    #                       'DspLowCutFrequency','DspLowCutNumTaps','DspLowCutFilterType',
+    #                       'DSPHighCutFilterEnabled','DspHighCutFrequency','DspHighCutNumTaps',
+    #                       'DspHighCutFilterType','DspDelayCompensation','DspFilterDelay_\xb5s',
+    #                        'DisabledSubChannels','WaveformLength','AlignmentPt','ThresVal',
+    #                        'MinRetriggerSamples','SpikeRetriggerTime','DualThresholding',
+    #                        'Feature Peak 0','Feature Valley 1','Feature Energy 2','Feature Height 3',
+    #                        'Feature NthSample 4','Feature NthSample 5','Feature NthSample 6',
+    #                        'Feature NthSample 7']
+    #
+    #
+    #     #extracting minor key values of header (only taking into account non-empty lines)
+    #     for i, minor_entry in enumerate([text for text in ncs_text_header[4:] if text != '']):
+    #         matching_key = [key for key in ncs_minor_keys if minor_entry.strip('-').startswith(key)]
+    #         if len(matching_key)==1:
+    #             minor_value = minor_entry.split(matching_key)[1].strip(' ').rstrip(' ')
+    #
+    #             # determine data type of entry
+    #             if minor_value.isdigit():
+    #                 minor_value = int(minor_value)
+    #             else:
+    #                 try:
+    #                     minor_value = float(minor_value)
+    #                 except:
+    #                     pass
+    #
+    #             if matching_key in self.parameters_ncs[chid][matching_key]:
+    #                 warnings.warn('Multiple entries for %s in text header of %s'%(matching_key,filename))
+    #
+    #             # assign value of correct data type to ncs parameter dictionary
+    #             self.parameters_ncs[chid][minor_entry.split(' ')[0][1:]] = minor_value
+    #
+    #     self._diagnostic_print('Successfully decoded text header of ncs file (%s).'%(filename_ncs))
+    #
+    #
+    #
+    # def __read_nse_text_header(self,filename_nse,chid):
+    #     # Reading main file header (plain text, 16kB)
+    #     nse_text_header = open(self.sessiondir + '/' + filename_nse,'r').read(16384)
+    #     #separating lines of header and ignoring last line (fill)
+    #     nse_text_header = nse_text_header.split('\r\n')[:-1]
+    #
+    #     # extracting filename and recording opening/closing time
+    #     header_dict = self.__read_intro_txt_header(nse_text_header)
+    #     self.parameters_nse[chid].update(header_dict)
+    #
+    #     if 'SamplingFrequency' in self.parameters_nse[chid]:
+    #         self.parameters_nse[chid]['sampling_rate'] = self.parameters_nse[chid] * self.nse_sr_unit
+    #
+    # def __read_ntt_text_header(self,filename_ntt,chid):
+    #     # Reading main file header (plain text, 16kB)
+    #     ntt_text_header = open(self.sessiondir + '/' + filename_ntt,'r').read(16384)
+    #     #separating lines of header and ignoring last line (fill)
+    #     ntt_text_header = ntt_text_header.split('\r\n')[:-1]
+    #
+    #     # extracting filename and recording opening/closing time
+    #     header_dict = self.__read_intro_txt_header(ntt_text_header)
+    #     self.parameters_ntt[chid].update(header_dict)
+    #
+    # def __read_nev_text_header(self,filename_nev):
+    #     # Reading main file header (plain text, 16kB)
+    #     nev_text_header = open(self.sessiondir + '/' + filename_nev,'r').read(16384)
+    #     #separating lines of header and ignoring last line (fill)
+    #     nev_text_header = nev_text_header.split('\r\n')[:-1]
+    #
+    #     # extracting filename and recording opening/closing time
+    #     header_dict = self.__read_intro_txt_header(nev_text_header)
+    #     self.parameters_nev[filename_nev].update(header_dict)
 
 
     def __read_intro_txt_header(self,txt_header):
@@ -1301,23 +1552,31 @@ class NeuralynxIO(BaseIO):
                 raise ValueError('Trying to read second nev file of name %s. '
                                  ' Only one can be handled.'%filename)
             self.parameters_nev[filename]['Starting_Recording'] = []
+            self.parameters_nev[filename]['events'] = []
             for event in filehandle:
-                if event[4] == 11: # meaning recording start
-                    self.parameters_nev[filename]['Starting_Recording'].append(event[3])
+                # separately extracting 'Starting Recording'
+                if event[4] == 11 and event[10] == 'Starting Recording':
+                    self.parameters_nev[filename]['Starting_Recording'].append(event[3]*self.nev_time_unit)
+
+                # adding all events to parameter collection
+                self.parameters_nev[filename]['events'].append({'timestamp':event[3]*self.nev_time_unit,
+                                                                'event_id':event[4],
+                                                                'nttl':event[5],
+                                                                'name':event[10]})
 
             if len(self.parameters_nev[filename]['Starting_Recording']) < 1:
                 raise ValueError('No Event "Starting_Recording" detected in %s'%(filename))
 
-            self.parameters_nev[filename]['t_start'] = min(self.parameters_nev[filename]['Starting_Recording']) * self.nev_time_unit
-            self.parameters_nev[filename]['t_stop'] = max([filehandle[i][3] for i in range(len(filehandle))]) * self.nev_time_unit # t_stop = time stamp of last event in file
+            self.parameters_nev[filename]['t_start'] = min(self.parameters_nev[filename]['Starting_Recording'])
+            self.parameters_nev[filename]['t_stop'] = max([e['timestamp'] for e in self.parameters_nev[filename]['events']]) # t_stop = time stamp of last event in file
 
 
 
             # extract all occurring event marker ids
-            event_type_collection = {}
-            for event in filehandle:
-                event_type_collection[event[4]] = event[10]
-            self.parameters_nev[filename]['digital_markers'] = copy.deepcopy(event_type_collection)  # entries (marker_id,name)
+            event_types = copy.deepcopy(self.parameters_nev[filename]['events'])
+            for d in event_types:
+                d.pop('timestamp')
+            self.parameters_nev[filename]['event_types'] = [dict(y) for y in set(tuple(x.items()) for x in event_types)]
 
 
         # TODO: Extract other important Recording events. But which ones?
@@ -1379,8 +1638,6 @@ class NeuralynxIO(BaseIO):
 
         assert all(channel_ids == channel_ids[0])
 
-        assert all(cell_numbers == cell_numbers[0])
-
         assert all([len(dp)==len(data_points[0]) for dp in data_points])
 
         self._diagnostic_print('NSE file check successful.')
@@ -1396,9 +1653,22 @@ class NeuralynxIO(BaseIO):
                 Handle to the already opened .nev file.
         '''
 
-        # TODO: Not yet implemented. What should be tested?
-        pass
-#        self._diagnostic_print('NEV file check successful.')
+        # this entry should always equal 2 (see Neuralynx File Description), but it is not. For me, this is 0.
+        assert all([f[2]==2 or f[2]==0 for f in filehandle])
+
+        # only observed 0 for index 0,1,2,6,7,8,9 in nev files. If they are non-zero, this needs to be included in event extraction
+        assert all([f[0]==0 for f in filehandle])
+        assert all([f[1]==0 for f in filehandle])
+        assert all([f[2]==0 for f in filehandle])
+
+        assert all([f[6]==0 for f in filehandle])
+        assert all([f[7]==0 for f in filehandle])
+        assert all([f[8]==0 for f in filehandle])
+        assert all([all(f[9]==0) for f in filehandle])
+
+        #TODO: what else could be tested?
+
+        self._diagnostic_print('NEV file check successful.')
 
 
     def __ntt_check(self,filehandle):
@@ -1414,8 +1684,6 @@ class NeuralynxIO(BaseIO):
         [timestamps, channel_ids, cell_numbers, features, data_points] = filehandle
 
         assert all(channel_ids == channel_ids[0])
-
-        assert all(cell_numbers == cell_numbers[0])
 
         assert all([len(dp)==len(data_points[0]) for dp in data_points])
 
@@ -1557,3 +1825,49 @@ class NeuralynxIO(BaseIO):
 
         if self._print_diagnostic:
             print('NeuralynxIO: ' + text)
+
+
+# this function is copies from io.tools.py and adapted to also work on analogsignalarrays instead of analogsignals
+def populate_RecordingChannel(bl, remove_from_annotation=True):
+    """
+    When a Block is
+    Block>Segment>AnalogSIgnal
+    this function auto create all RecordingChannel following these rules:
+      * when 'channel_index ' is in AnalogSIgnal the corresponding
+        RecordingChannel is created.
+      * 'channel_index ' is then set to None if remove_from_annotation
+      * only one RecordingChannelGroup is created
+
+    It is a utility at the end of creating a Block for IO.
+
+    Usage:
+    >>> populate_RecordingChannel(a_block)
+    """
+    recordingchannels = {}
+    for seg in bl.segments:
+        for anasig in seg.analogsignalarrays:
+            if getattr(anasig, 'channel_index', None) is not None:
+                ind = int(anasig.channel_index)
+                if ind not in recordingchannels:
+                    recordingchannels[ind] = RecordingChannel(index=ind)
+                    if 'channel_name' in anasig.annotations:
+                        channel_name = anasig.annotations['channel_name']
+                        recordingchannels[ind].name = channel_name
+                        if remove_from_annotation:
+                            anasig.annotations.pop('channel_name')
+                recordingchannels[ind].analogsignals.append(anasig)
+                anasig.recordingchannel = recordingchannels[ind]
+                if remove_from_annotation:
+                    anasig.channel_index = None
+
+    indexes = np.sort(list(recordingchannels.keys())).astype('i')
+    names = np.array([recordingchannels[idx].name for idx in indexes],
+                     dtype='S')
+    rcg = RecordingChannelGroup(name='all channels',
+                                channel_indexes=indexes,
+                                channel_names=names)
+    bl.recordingchannelgroups.append(rcg)
+    for ind in indexes:
+        # many to many relationship
+        rcg.recordingchannels.append(recordingchannels[ind])
+        recordingchannels[ind].recordingchannelgroups.append(rcg)
