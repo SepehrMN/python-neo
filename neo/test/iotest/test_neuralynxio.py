@@ -264,7 +264,7 @@ class testRead(unittest.TestCase):
 
     def test_read_ntt_data(self):
         pass
-    #TODO: Implement test_read_ntt_data one ntt files are available
+    #TODO: Implement test_read_ntt_data once ntt files are available
 
 
     def test_gap_handling(self):
