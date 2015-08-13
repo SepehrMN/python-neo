@@ -25,28 +25,6 @@ from neo.io import tools
 from neo.core import Segment
 
 
-#~ class testRead(unittest.TestCase):
-    #~ """Tests that data can be read from KlustaKwik files"""
-    #~ def test1(self):
-        #~ """Tests that data and metadata are read correctly"""
-        #~ pass
-    #~ def test2(self):
-        #~ """Checks that cluster id autosets to 0 without clu file"""
-        #~ pass
-        #~ dirname = os.path.normpath('./files_for_tests/klustakwik/test2')
-        #~ kio = neo.io.KlustaKwikIO(filename=os.path.join(dirname, 'base2'),
-            #~ sampling_rate=1000.)
-        #~ seg = kio.read()
-        #~ seg = block.segments[0]
-        #~ self.assertEqual(len(seg.spiketrains), 1)
-        #~ self.assertEqual(seg.spiketrains[0].name, 'unit 0 from group 5')
-        #~ self.assertEqual(seg.spiketrains[0].annotations['cluster'], 0)
-        #~ self.assertEqual(seg.spiketrains[0].annotations['group'], 5)
-        #~ self.assertEqual(seg.spiketrains[0].t_start, 0.0)
-        #~ self.assertTrue(np.all(seg.spiketrains[0].times == np.array(
-            #~ [0.026, 0.122, 0.228])))
-
-
 class CommonTests(BaseTestIO, unittest.TestCase):
     ioclass = NeuralynxIO
     read_and_write_is_bijective = False
@@ -80,10 +58,10 @@ class CommonTests(BaseTestIO, unittest.TestCase):
 @unittest.skipIf(sys.version_info[0] > 2, "not Python 3 compatible")
 class testRead(unittest.TestCase):
     def setUp(self):
-        self.sn = ('/home/julia/repositories/python/python-neo/neo/test/'
-                   'iotest/neuralynx_test_files/testsession')
-        self.pd = ('/home/julia/repositories/python/python-neo/neo/test/'
-                   'iotest/neuralynx_test_files/plaindata')
+        self.sn = ('neuralynx_test_files/testsession')
+        self.pd = ('neuralynx_test_files/plaindata')
+
+        # Implement this when downloading files from server
 #        self.sn = os.path.join(tempfile.gettempdir(),
 #                               'files_for_testing_neo',
 #                               'blackrock/test2/test.ns5')
@@ -136,7 +114,6 @@ class testRead(unittest.TestCase):
 
     def test_read_segment(self):
         """Read data in a certain time range into one block"""
-        # t_start,t_stop = 2*pq.s,10*pq.s
 
         nio = NeuralynxIO(self.sn)
         seg = nio.read_segment(t_start=None, t_stop=None)
