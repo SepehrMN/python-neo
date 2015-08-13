@@ -24,7 +24,7 @@ import datetime
 
 import numpy as np
 if int(re.sub('\.', '', np.__version__)) < 192:
-     raise ImportError("Using h5py version %s. Version must be >= 2.3.0" % (np.__version__))
+     raise ImportError("Using numpy version %s. Version must be >= 2.3.0" % (np.__version__))
 import quantities as pq
 
 
