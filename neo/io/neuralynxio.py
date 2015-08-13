@@ -7,15 +7,14 @@ Depends on: numpy
 
 Supported: Read
 
-Author: ccanova, jsprenger
+Author: jsprenger,ccanova
 Adapted from the exampleIO of python-neo
 """
 
 # needed for python 3 compatibility
 from __future__ import absolute_import, division
 
-import logging
-import struct
+
 import sys
 import os
 import warnings
@@ -24,6 +23,8 @@ import re
 import datetime
 
 import numpy as np
+if int(re.sub('\.', '', np.__version__)) < 192:
+     raise ImportError("Using h5py version %s. Version must be >= 2.3.0" % (np.__version__))
 import quantities as pq
 
 
@@ -1173,7 +1174,8 @@ class NeuralynxIO(BaseIO):
             # check consistency of gaps across files and create global gap collection
             self.parameters_global['gaps'] = []
             for g in range(len(self.parameters_ncs.values()[0]['gaps'])):
-                if len(np.unique([i['gaps'][g] for i in self.parameters_ncs.values()])) != 1:
+                gap_stats = np.unique([i['gaps'][g] for i in self.parameters_ncs.values()],return_counts=True)
+                if len(gap_stats[0]) != 3 or len(np.unique(gap_stats[1])) != 1:
                     raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
                 else:
                     self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'][g])
