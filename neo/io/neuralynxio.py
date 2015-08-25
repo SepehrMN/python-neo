@@ -909,7 +909,7 @@ class NeuralynxIO(BaseIO):
         self.parameters_global = {}
 
         # Scanning session directory for recorded files
-        self.sessionfiles = [ f for f in listdir(self.sessiondir) if isfile(join(self.sessiondir,f)) ]
+        self.sessionfiles = [ f for f in listdir(self.sessiondir) if isfile(os.path.join(self.sessiondir,f)) ]
 
         # Listing available files
         self.ncs_avail = []
