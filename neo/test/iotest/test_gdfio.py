@@ -136,6 +136,22 @@ class TestGdfIO(BaseTestIO, unittest.TestCase):
                              id_column=0, time_column=1)
         self.assertTrue(len(seg.spiketrains) == 30)
 
+    def test_read_segment_range_is_reasonable(self):
+        '''
+        Tests if error is thrown, when second entry is larger than first in range.
+        '''
+
+        r = GdfIO(filename='gdf_test_files/withgidT-time_in_stepsF-1255-0.gdf')
+
+        seg = r.read_segment(gdf_id_list=(10, 10), t_start=0.*pq.ms,
+                             t_stop=1000.*pq.ms, lazy=False,
+                             id_column=0, time_column=1)
+        self.assertTrue(len(seg.spiketrains) == 1)
+        with self.assertRaises(ValueError):
+            seg = r.read_segment(gdf_id_list=(10, 9), t_start=0.*pq.ms,
+                                 t_stop=1000.*pq.ms, lazy=False,
+                                 id_column=0, time_column=1)
+
     def test_read_spiketrain_annotates(self):
         '''
         Tests if correct annotation is added when reading a spiketrain.

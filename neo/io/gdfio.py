@@ -213,6 +213,8 @@ class GdfIO(BaseIO):
         """
 
         if isinstance(gdf_id_list, tuple):
+            if gdf_id_list[0] > gdf_id_list[1]:
+                raise ValueError('second entry in range should be smaller or equal to first entry.')
             gdf_id_list = range(gdf_id_list[0], gdf_id_list[1] + 1)
 
         # __read_spiketrains() needs a list of IDs
