@@ -21,21 +21,20 @@ import warnings
 import copy
 import re
 import datetime
+import pkg_resources
 
 import numpy as np
-if int(re.sub('\.', '', np.__version__)) < 192:
-     raise ImportError("Using numpy version %s. Version must be >= 2.3.0" % (np.__version__))
+if pkg_resources.pkg_resources.parse_version(np.__version__) < pkg_resources.pkg_resources.parse_version('1.9.2'):
+     raise ImportError("Using numpy version %s. Version must be >= 1.9.2" % (np.__version__))
+
 import quantities as pq
-
-
 
 from neo.io.baseio import BaseIO
 from neo.core import (Block, Segment,
                       RecordingChannel, RecordingChannelGroup, AnalogSignalArray,
                       SpikeTrain, EventArray,Unit)
-from neo.io import tools
 from os import listdir
-from os.path import isfile, join, getsize
+from os.path import isfile, getsize
 
 import hashlib
 import pickle
@@ -1320,7 +1319,6 @@ class NeuralynxIO(BaseIO):
             ts = data[:,0:2]
             multi=np.repeat(np.array([1,2**32],ndmin=2),len(data),axis=0)
             timestamps=np.sum(ts*multi,axis=1)
-
             #timestamps = data[:,0] + (data[:,1] *2**32)
             header_u4 = data[:,2:5]
 
