@@ -529,7 +529,7 @@ class NeuralynxIO(BaseIO):
         sampling_rate = self.parameters_ncs[chid]['sampling_unit']
         #creating neo AnalogSignalArray containing data
         anasig = AnalogSignalArray(signal = pq.Quantity(sig,unit, copy = False),
-                                                    sampling_rate = sampling_rate,
+                                                    sampling_rate = 1*sampling_rate,
                                                     # rescaling t_start to sampling time units
                                                     t_start = (header_time_data[p_id_start] * self.ncs_time_unit - self.parameters_global['t_start']).rescale(1/sampling_rate),
                                                     name = 'channel_%i'%(chid),
