@@ -784,6 +784,7 @@ class NeuralynxIO(BaseIO):
                 # Collect all waveforms of the specific unit
                 # For computational reasons: no units, no time axis
                 st.waveforms = data_points[unit_mask][time_mask]
+                # TODO: Add units to waveforms (pq.uV?) and add annotation left_sweep = x * pq.ms indicating when threshold crossing occurred in waveform
 
             st.annotations = self.parameters_nse[chid]
             st.annotations['electrode_id'] = chid
@@ -923,6 +924,7 @@ class NeuralynxIO(BaseIO):
                 # This is stupid and not intuitive.
                 st.waveforms = np.array([data_points[t,:,:] for t in range(len(timestamps))
                                                 if cell_numbers[t]==unit_i]).transpose()
+                # TODO: Add units to waveforms (pq.uV?) and add annotation left_sweep = x * pq.ms indicating when threshold crossing occurred in waveform
 
             st.annotations = self.parameters_ntt[chid]
             st.annotations['electrode_id'] = chid
