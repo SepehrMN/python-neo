@@ -338,6 +338,8 @@ class NeuralynxIO(BaseIO):
         #loading all channels if empty electrode_list
         if electrode_list == []:
             electrode_list = self.parameters_ncs.keys()
+        elif electrode_list == None:
+            raise ValueError('Electrode_list can not be None.')
         elif [v for v in electrode_list if v in self.parameters_ncs.keys()]== []:
             # warn if non of the requested channels are present in this session
             warnings.warn('Requested channels %s are not present in session '
@@ -1246,11 +1248,23 @@ class NeuralynxIO(BaseIO):
             # check consistency of gaps across files and create global gap collection
             self.parameters_global['gaps'] = []
             for g in range(len(self.parameters_ncs.values()[0]['gaps'])):
+                integrated = False
                 gap_stats = np.unique([i['gaps'][g] for i in self.parameters_ncs.values()],return_counts=True)
                 if len(gap_stats[0]) != 3 or len(np.unique(gap_stats[1])) != 1:
                     raise ValueError('Gap number %i is not consistent across NCS files.'%(g))
                 else:
-                    self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'][g])
+                    # check if this is second part of already existing gap
+                    for gg in range(len(self.parameters_global['gaps'])):
+                        globalgap = self.parameters_global['gaps'][gg]
+                        # check if stop time of first is start time of second -> continuous gap
+                        if globalgap[2] == self.parameters_ncs.values()[0]['gaps'][g][1]:
+                            self.parameters_global['gaps'][gg] = self.parameters_global['gaps'][gg][:2] + (self.parameters_ncs.values()[0]['gaps'][g][2],)
+                            integrated = True
+                            break
+
+                    if not integrated:
+                        # add as new gap if this is not a continuation of existing global gap
+                        self.parameters_global['gaps'].append(self.parameters_ncs.values()[0]['gaps'][g])
 
 
         # save results of association for future analysis together with hash values for change tracking
