@@ -33,7 +33,7 @@ from neo.io.baseio import BaseIO
 from neo.core import (Block, Segment,
                       RecordingChannel, RecordingChannelGroup, AnalogSignalArray,
                       SpikeTrain, EventArray,Unit)
-from os import listdir
+from os import listdir, sep
 from os.path import isfile, getsize
 
 import hashlib
@@ -150,11 +150,11 @@ class NeuralynxIO(BaseIO):
 
         # remove filename if specific file was passed
         if any([sessiondir.endswith('.%s'%ext) for ext in self.extensions]):
-            sessiondir = sessiondir[:sessiondir.rfind('/')]
+            sessiondir = sessiondir[:sessiondir.rfind(sep)]
 
         # remove / for consistent directory handling
-        if sessiondir.endswith('/'):
-                sessiondir = sessiondir.strip('/')
+        if sessiondir.endswith(sep):
+            sessiondir = sessiondir.rstrip(sep)
 
         # set general parameters of this IO
         self.sessiondir = sessiondir
@@ -420,8 +420,8 @@ class NeuralynxIO(BaseIO):
         # checking format of filename and correcting if necessary
         if filename_ncs[-4:] != '.ncs':
             filename_ncs = filename_ncs + '.ncs'
-        if '/' in filename_ncs:
-            filename_ncs = filename_ncs.split('/')[-1]
+        if sep in filename_ncs:
+            filename_ncs = filename_ncs.split(sep)[-1]
 
 
         # Extracting the channel id from prescan (association) of ncs files with
@@ -579,8 +579,8 @@ class NeuralynxIO(BaseIO):
 
         if filename_nev[-4:]!='.nev':
             filename_nev += '.nev'
-        if '/' in filename_nev:
-            filename_nev = filename_nev.split('/')[-1]
+        if sep in filename_nev:
+            filename_nev = filename_nev.split(sep)[-1]
 
         if filename_nev not in self.nev_asso:
             raise ValueError('NeuralynxIO is attempting to read a file '
@@ -685,8 +685,8 @@ class NeuralynxIO(BaseIO):
 
         if filename_nse[-4:]!='.nse':
             filename_nse += '.nse'
-        if '/' in filename_nse:
-            filename_nse = filename_nse.split('/')[-1]
+        if sep in filename_nse:
+            filename_nse = filename_nse.split(sep)[-1]
 
         # extracting channel id of requested file
         channel_id = self.get_channel_id_by_file_name(filename_nse)
@@ -824,8 +824,8 @@ class NeuralynxIO(BaseIO):
 
         if filename_ntt[-4:]!='.ntt':
             filename_ntt += '.ntt'
-        if '/' in filename_ntt:
-            filename_ntt = filename_ntt.split('/')[-1]
+        if sep in filename_ntt:
+            filename_ntt = filename_ntt.split(sep)[-1]
 
         # extracting channel id of requested file
         channel_id = self.get_channel_id_by_file_name(filename_ntt)
@@ -997,15 +997,15 @@ class NeuralynxIO(BaseIO):
         if cachedir != None and usecache != 'never':
 
             self._diagnostic_print('Calculating %s of session files to check for cached parameter files.'%usecache)
-            cachefile = cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys'
-            if not os.path.exists(cachedir + '/' + self.sessiondir.split('/')[-1]):
-                os.makedirs(cachedir + '/' + self.sessiondir.split('/')[-1])
+            cachefile = cachedir + sep + self.sessiondir.split(sep)[-1] + '/hashkeys'
+            if not os.path.exists(cachedir + sep + self.sessiondir.split(sep)[-1]):
+                os.makedirs(cachedir + sep + self.sessiondir.split(sep)[-1])
 
             if usecache=='hash':
                 # calculates hash of all available files
-                hashes_calc = {f:self.hashfile(open(self.sessiondir + '/' + f, 'rb'), hashlib.sha256()) for f in self.sessionfiles}
+                hashes_calc = {f:self.hashfile(open(self.sessiondir + sep + f, 'rb'), hashlib.sha256()) for f in self.sessionfiles}
             elif usecache=='datesize':
-                hashes_calc = {f:self.datesizefile(self.sessiondir + '/' + f) for f in self.sessionfiles}
+                hashes_calc = {f:self.datesizefile(self.sessiondir + sep + f) for f in self.sessionfiles}
 
             # load hashes saved for this session in an earlier loading run
             if os.path.exists(cachefile):
@@ -1018,7 +1018,7 @@ class NeuralynxIO(BaseIO):
                 self._diagnostic_print('Using cached metadata from earlier analysis run in file %s. Skipping file checks.'%cachefile)
 
                 # loading saved parameters
-                parameterfile = cachedir + '/' + self.sessiondir.split('/')[-1] + '/parameters.cache'
+                parameterfile = cachedir + sep + self.sessiondir.split(sep)[-1] + '/parameters.cache'
                 if os.path.exists(parameterfile):
                     parameters_read = pickle.load(open(parameterfile, 'rb') )
                 else:
@@ -1274,9 +1274,9 @@ class NeuralynxIO(BaseIO):
                           'nev': self.parameters_nev,
                           'nse': self.parameters_nse,
                           'ntt': self.parameters_ntt},
-                         open( cachedir + '/' + self.sessiondir.split('/')[-1] + '/parameters.cache', 'wb' ))
+                         open( cachedir + sep + self.sessiondir.split(sep)[-1] + '/parameters.cache', 'wb' ))
             if usecache != 'always':
-                pickle.dump( hashes_calc, open(cachedir + '/' + self.sessiondir.split('/')[-1] + '/hashkeys', 'wb' ))
+                pickle.dump( hashes_calc, open(cachedir + sep + self.sessiondir.split(sep)[-1] + '/hashkeys', 'wb' ))
 
         self.associated = True
 
@@ -1293,9 +1293,9 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        filesize = getsize(self.sessiondir + sep + filename) #in byte
         if filesize > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename,
+            data = np.memmap(self.sessiondir + sep + filename,
                             dtype='<u2', shape = ((filesize-16384)/2/56,56),
                             mode='r', offset=16384)
 
@@ -1315,8 +1315,8 @@ class NeuralynxIO(BaseIO):
 
     def __mmap_ncs_data(self,filename):
         """ Memory map of the Neuralynx .ncs file optimized for data extraction"""
-        if getsize(self.sessiondir + '/' + filename) > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename, dtype=np.dtype(('i2',(522))),mode='r', offset=16384)
+        if getsize(self.sessiondir + sep + filename) > 16384:
+            data = np.memmap(self.sessiondir + sep + filename, dtype=np.dtype(('i2',(522))),mode='r', offset=16384)
             #removing data packet headers and flattening data
             return data[:,10:]
         else: return None
@@ -1326,9 +1326,9 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        filesize = getsize(self.sessiondir + sep + filename) #in byte
         if filesize > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename,
+            data = np.memmap(self.sessiondir + sep + filename,
                             dtype='<u4', shape = ((filesize-16384)/4/261,261),
                             mode='r', offset=16384)
 
@@ -1346,9 +1346,9 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        filesize = getsize(self.sessiondir + sep + filename) #in byte
         if filesize > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename,
+            data = np.memmap(self.sessiondir + sep + filename,
                             dtype='<u4', shape = ((filesize-16384)/4/261,261),
                             mode='r', offset=16384)
 
@@ -1377,8 +1377,8 @@ class NeuralynxIO(BaseIO):
             ('event_string', 'a128'),
         ])
 
-        if getsize(self.sessiondir + '/' + filename) > 16384:
-            return np.memmap(self.sessiondir + '/' + filename,
+        if getsize(self.sessiondir + sep + filename) > 16384:
+            return np.memmap(self.sessiondir + sep + filename,
                                          dtype=nev_dtype, mode='r', offset=16384)
         else: return None
 
@@ -1391,8 +1391,8 @@ class NeuralynxIO(BaseIO):
             ('params', '<u4',   (8,)),
             ('data', '<i2', (32, 4)),
         ])
-        if getsize(self.sessiondir + '/' + filename) > 16384:
-            return np.memmap(self.sessiondir + '/' + filename,
+        if getsize(self.sessiondir + sep + filename) > 16384:
+            return np.memmap(self.sessiondir + sep + filename,
                                          dtype=nse_dtype, mode='r', offset=16384)
         else: return None
 
@@ -1402,9 +1402,9 @@ class NeuralynxIO(BaseIO):
         Memory map of the Neuralynx .ncs file optimized for extraction of data packet headers
         Reading standard dtype improves speed, but timestamps need to be reconstructed
         """
-        filesize = getsize(self.sessiondir + '/' + filename) #in byte
+        filesize = getsize(self.sessiondir + sep + filename) #in byte
         if filesize > 16384:
-            data = np.memmap(self.sessiondir + '/' + filename,
+            data = np.memmap(self.sessiondir + sep + filename,
                             dtype='<u2', shape = ((filesize-16384)/2/152,152),
                             mode='r', offset=16384)
 
@@ -1426,9 +1426,12 @@ class NeuralynxIO(BaseIO):
 
     def __read_text_header(self,filename,parameter_dict):
         # Reading main file header (plain text, 16kB)
-        text_header = open(self.sessiondir + '/' + filename,'r').read(16384)
-        #separating lines of header and ignoring last line (fill)
-        text_header = text_header.split('\r\n')[:-1]
+        text_header = open(self.sessiondir + sep + filename,'r').read(16384)
+        #separating lines of header and ignoring last line (fill), check if Linux or Windows OS
+        if sep == '/':
+            text_header = text_header.split('\r\n')[:-1]
+        if sep == '\\':
+            text_header = text_header.split('\n')[:-1]
 
         # extracting filename and recording opening/closing time
         header_dict = self.__read_intro_txt_header(text_header)
