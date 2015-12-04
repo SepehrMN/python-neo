@@ -154,7 +154,7 @@ class NeuralynxIO(BaseIO):
 
         # remove / for consistent directory handling
         if sessiondir.endswith('/'):
-                sessiondir = sessiondir.strip('/')
+                sessiondir = sessiondir.rstrip('/')
 
         # set general parameters of this IO
         self.sessiondir = sessiondir
