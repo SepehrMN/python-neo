@@ -158,6 +158,7 @@ class NeuralynxIO(BaseIO):
 
         # set general parameters of this IO
         self.sessiondir = sessiondir
+        self.filename = sessiondir.split(sep)[-1]
         self._print_diagnostic = print_diagnostic
         self.associated = False
         self._associate(cachedir=cachedir,usecache=use_cache)
@@ -215,6 +216,7 @@ class NeuralynxIO(BaseIO):
         """
         # Create block
         bl = Block(file_origin=self.sessiondir)
+        bl.name = self.filename
         if not cascade:
             return bl
 
