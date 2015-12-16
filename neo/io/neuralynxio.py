@@ -1032,6 +1032,10 @@ class NeuralynxIO(BaseIO):
                                          (self.parameters_nev,'nev'),
                                          (self.parameters_ntt,'ntt')]:
                     IOdict.update(parameters_read[dictname])
+                self.nev_asso = self.parameters_nev.keys()
+                self.ncs_asso = [val['filename'] for val in self.parameters_ncs.values()]
+                self.nse_asso = [val['filename'] for val in self.parameters_nse.values()]
+                self.ntt_asso = [val['filename'] for val in self.parameters_ntt.values()]
 
 
         for filename in self.sessionfiles:
