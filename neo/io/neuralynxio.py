@@ -24,8 +24,12 @@ import datetime
 import pkg_resources
 
 import numpy as np
-if pkg_resources.pkg_resources.parse_version(np.__version__) < pkg_resources.pkg_resources.parse_version('1.9.2'):
+try:
+    if pkg_resources.pkg_resources.parse_version(np.__version__) < pkg_resources.pkg_resources.parse_version('1.9.2'):
      raise ImportError("Using numpy version %s. Version must be >= 1.9.2" % (np.__version__))
+except AttributeError:
+    if pkg_resources.parse_version(np.__version__) < pkg_resources.parse_version('1.9.2'):
+         raise ImportError("Using numpy version %s. Version must be >= 1.9.2" % (np.__version__))
 
 import quantities as pq
 
